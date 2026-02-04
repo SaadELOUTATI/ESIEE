@@ -1,1356 +1,1405 @@
-"""
-game.py — Moteur principal du jeu "Vigilant : Chapitre I — Eridani Prime".
+"""Main game loop and orchestration for Vigilant."""
 
-Ce module gère :
-- la construction du monde (rooms, PNJ, ennemis, objets),
-- l’introduction narrative et les choix initiaux du joueur,
-- l’état global du jeu (combat, running, ennemi courant),
-- la boucle principale d’interaction,
-- l’exécution des commandes via Command.
+# pylint: disable=too-many-lines,too-many-public-methods,too-many-instance-attributes
+# pylint: disable=too-many-branches,too-many-statements
 
-Il s’agit de la classe centrale du jeu (le "Game Manager").
-"""
+# Import modules
 
-import random
-import actions
-from room import Room
+
+from world import (
+    World,
+    PRISON,
+    DISTRICT_OR,
+    QUARTIER_HOLO,
+    NOEUD,
+    PALAIS_LUMIERE,
+    SALLE_TRONE,
+    LANDING_VALLEY,
+    ANCIENT_NEXUS,
+)
+from player import Player
+from character import Character, novaterra_companion_reactive
+from command import Command
+from actions import Actions
+from quest import Quest, STATE_AVAILABLE, STATE_LOCKED, STATE_ACTIVE, STATE_COMPLETED
+import labels as L
+import ai_quiz
 from item import Item
 from enemy import Enemy
-from character import Character
-from player import Player
-from command import Command
 
 
 class Game:
-    """
-    Classe principale orchestrant tout le jeu.
+    """Coordinate world state, commands, and narrative flow."""
 
-    Attributs :
-        rooms (dict[str, Room]) : toutes les zones explorables.
-        player (Player) : le joueur courant.
-        in_combat (bool) : indique si un combat est en cours.
-        current_enemy (Enemy|None) : ennemi affronté pendant un combat.
-        running (bool) : contrôle la boucle principale du jeu.
 
-    L’initialisation lance automatiquement :
-        - la construction du monde,
-        - l’introduction + le choix dramatique du crash.
-    """
 
+    # Constructor
     def __init__(self):
-        """Initialise le jeu, construit les rooms et lance l’intro."""
+        """Initialize the game state containers."""
+        self.finished = False
         self.rooms = {}
+        self.commands = {}
         self.player = None
-        self.in_combat = False
-        self.current_enemy = None
-        self.running = True
-
-        self._build_world_1()
-        self._intro_and_crash()
-
-    # =========================================================
-    #   WORLD BUILDING — Construction de l’univers narratif
-    # =========================================================
-
-    def _build_world_1(self):
-        """
-        Crée toutes les pièces (rooms), leurs descriptions, connexions,
-        objets, PNJ et ennemis.
-
-        C’est le “setup” narratif et spatial du Chapitre I :
-        - Eridani Prime
-        - Avant-poste minier
-        - Marché labyrinthique
-        - Cité-forteresse
-
-        Chaque room est connectée Est/Ouest en ligne droite.
-        """
-        # Rooms
-        eridani = Room(
-            "Eridani Prime",
-            "dans un district pauvre, des fumées noires s’élèvent au-dessus des toits. "
-            "Des affiches de propagande couvrent les murs. "
-            "Les habitants avancent avec un mélange de peur et de résignation."
-        )
-        avant_poste = Room(
-            "Avant-poste minier",
-            "au milieu d’échafaudages branlants, de gardes épuisés et de mineurs au regard vide. "
-            "L’air est lourd de poussière et d’électricité."
-        )
-        marche = Room(
-            "Marché labyrinthique",
-            "un dédale d’allées étroites, d’échoppes sombres et de murmures étouffés. "
-            "Les hommes de main de Vorn rôdent à chaque coin d’ombre."
-        )
-        forteresse = Room(
-            "Cité-forteresse",
-            "des tours massives, des projecteurs écarlates et des soldats patrouillant sans relâche. "
-            "C’est ici que le Capitaine Vorn impose son règne."
-        )
-
-        # Connexions spatiales en ligne Est/Ouest
-        eridani.connect(avant_poste, "E")
-        avant_poste.connect(marche, "E")
-        marche.connect(forteresse, "E")
-        
-        # Assignation du game aux rooms
-        for r in (eridani, avant_poste, marche, forteresse):
-            r.game = self
-
-        
-        # Stockage des rooms
-        self.rooms = {
-            "Eridani Prime": eridani,
-            "Avant-poste minier": avant_poste,
-            "Marché labyrinthique": marche,
-            "Cité-forteresse": forteresse,
-        }
-
-        # Objet initial (trousse de soin)
-        medkit = Item(
-            "Trousse Médicale",
-            "Une trousse de soin rudimentaire (+25 PV).",
-            effect_type="heal",
-            value=25,
-            usable=True,
-            weight=3,
-        )
-        #cristal de propulsion obtenu plus tard dans le jeu   
-        cristal = Item(
-                        "Cristal de propulsion",
-                        "Cristal énergétique indispensable à la réparation du Vigilant.",
-                        effect_type="quest",
-                        value=0,
-                        usable=False,
-                        weight=2,
-                    )
-        # ------------------------------
-        #  PNJ — dialogues et callbacks
-        # ------------------------------
-
-        # Ralen
-        ralen = Character(
-            "Ralen",
-            "Un citoyen au regard vif malgré les cendres sur son visage."
-        )
-        
-
-        def talk_ralen(player, game, self_char):
-            """Dialogue dynamique selon si le joueur l’a déjà rencontré."""
-            if not player.met_ralen:
-                player.met_ralen = True
-                player.log("Vous avez rencontré Ralen à Eridani Prime.")
-                return (
-                    "Ralen : Vous n’avez pas l’air d’ici... "
-                    "Si vous voulez comprendre ce qui se passe, suivez la route vers l’est. "
-                    "Les mineurs de l’avant-poste vous diront le reste."
-                )
-            else:
-                return "Ralen : L’est vous attend toujours. Les mines, puis le marché... Et enfin Vorn."
-
-        ralen.on_talk = talk_ralen
-        eridani.add_character(ralen)
-
-        # Ingénieur Malek
-        malek = Character(
-            "Ingénieur Malek",
-            "Un technicien nerveux qui tente de réparer une foreuse brisée."
-        )
-               
-        def talk_malek(player, game, self_char):
-            """Dialogue variant selon les ressources du joueur."""
-            if player.resources >= 3:
-                return (
-                    "Malek : Vous avez du matériel ? Parfait. "
-                    "Je peux stabiliser les forages et calmer les gardes. "
-                    "Au marché, on murmure qu’un marchand détient un Cristal de propulsion."
-                )
-            else:
-                return (
-                    "Malek : Sans ressources, les gardes ne vous laisseront pas faire. "
-                    "Vous devrez sans doute vous salir les mains... ou négocier au marché."
-                )
-
-        malek.on_talk = talk_malek
-        avant_poste.add_character(malek)
-
-        # Marchand — choix moral central
-        marchand = Character(
-            "Marchand",
-            "Un homme sec, aux yeux calculateurs, entouré de caisses verrouillées."
-        )
-
-        def talk_marchand(player, game, self_char):
-            """
-            Dialogue crucial : le marchand propose d'échanger
-            un membre d’équipage contre le Cristal de propulsion.
-            """
-            if player.merchant_deal_done:
-                if player.merchant_sacrifice:
-                    return "Marchand : Les affaires sont les affaires. Profitez bien de votre cristal."
-                if player.merchant_refused:
-                    return "Marchand : Vous avez refusé. Je ne traite plus avec vous."
-                # Version neutre conservée en commentaire
-
-            print(
-                "Marchand : J'ai un Cristal de propulsion.\n"
-                "Mais je ne l’échange pas contre de l’argent.\n\n"
-                "Je veux un membre de votre équipage.\n"
-                "Il travaillera pour moi. C’est le prix.\n\n"
-                "1️⃣ Accepter l’échange (cristal + ressources, moral ↓)\n"
-                "2️⃣ Refuser (rencontre avec Yara)\n"
-            )
-            choix = input("> ").strip()
-            if choix == "1":
-                player.merchant_deal_done = True
-                player.merchant_sacrifice = True
-                player.moral -= 3
-                player.resources += 2
-
-                # Donne le cristal si le joueur ne l’a pas déjà (cas théorique)
-                if not player.has_crystal:
-                    player.add_item(cristal)
-                    player.has_crystal = True
-
-                return (
-                    "Le marchand sourit et fait emmener un membre de votre équipage.\n"
-                    "Vous obtenez le Cristal… mais à quel prix ?"
-                )
-            else:
-                player.merchant_deal_done = True
-                player.merchant_refused = True
-                player.met_yara = True
-                player.moral += 1
-                return (
-                    "Vous refusez net.\n"
-                    "Dans une ruelle sombre, une femme encapuchonnée vous observe...\n"
-                    "Yara : « Tu as refusé de vendre les tiens. On doit parler. »"
-                )
-
-        marchand.on_talk = talk_marchand
-        marche.add_character(marchand)
-
-        # Yara (rebelle)
-        yara = Character(
-            "Yara",
-            "Une femme encapuchonnée, regard déterminé, symbole rebelle au poignet."
-        )
-
-        def talk_yara(player, game, self_char):
-            """Dialogue change selon progression (rencontre + boss vaincu)."""
-            if not player.met_yara:
-                return "Une silhouette encapuchonnée passe fugacement, puis disparaît."
-            if not player.vorn_defeated:
-                return (
-                    "Yara : Tu as gardé ton équipage. Bien.\n"
-                    "Nous préparons un assaut sur la forteresse. "
-                    "Abats Vorn, et nous t’aiderons à quitter cette planète."
-                )
-            else:
-                return (
-                    "Yara : Vorn est tombé grâce à toi. "
-                    "Quand ton vaisseau sera prêt, Eridani se souviendra de ton nom."
-                )
-
-        yara.on_talk = talk_yara
-        marche.add_character(yara)
-
-        # Ennemis
-        patrouilleur = Enemy("Patrouilleur de Vorn", hp=40, atk=7, defense=2)
-        avant_poste.add_enemy(patrouilleur)
-
-        # Boss final
-        vorn = Enemy(
-            "Capitaine Vorn",
-            hp=80,
-            atk=12,
-            defense=4,
-            is_boss=True,
-            loot=[cristal],
-        )
-        forteresse.add_enemy(vorn)
-
-
-
-    def _build_world_2(self):
-        """
-        Construit les zones principales du CHAPITRE II : Velyra IX.
-        Version épurée : pas de velrya_stage, uniquement des flags explicites.
-        """
-        # --- ROOMS ---
-        base = Room(
-            "Base rebelle de Velyra",
-            "Un bunker dissimulé sous les ruines d’un ancien quartier industriel. "
-            "Des écrans grésillent, montrant les patrouilles de drones du Gouverneur Karn."
-        )
-        quartier = Room(
-            "Quartier civil",
-            "Des immeubles serrés, des néons blafards, des habitants qui marchent tête baissée "
-            "sous l’œil constant des caméras."
-        )
-        entrepots = Room(
-            "Entrepôts civils",
-            "De grands hangars où sont stockées les réserves d’énergie et de nourriture. "
-            "Des gardes mécaniques veillent sans relâche."
-        )
-        prison = Room(
-            "Prison centrale",
-            "Une forteresse de métal noir, hérissée de tourelles automatiques. "
-            "C’est ici que sont enfermés Narek et les chefs rebelles."
-        )
-        citadelle = Room(
-            "Citadelle de Karn",
-            "Un gratte-ciel blindé entouré de drones, cœur du pouvoir du Gouverneur Karn. "
-            "Les IA marchandes y supervisent chaque transaction, chaque mouvement."
-        )
-
-        # Connexions linéaires
-        base.connect(quartier, "E")
-        quartier.connect(entrepots, "E")
-        entrepots.connect(prison, "E")
-        prison.connect(citadelle, "E")
-        
-        # Assignation du game aux rooms
-        for r in (base, quartier, entrepots, prison, citadelle):
-            r.game = self
-        
-    
-        
-        # items obtentus dans le chapitre 2
-        nanomed = Item(
-            "Dose de Nanomédecine",
-            "Un cylindre métallique rempli de nanorobots médicaux capables de réparer les tissus "
-            "en quelques secondes. Une seule dose. Une seule chance.",
-            effect_type="quest",
-            value=0,
-            usable=False,
-            weight=1
-        )
-        
-        # Descriptions alternatives
-        entrepots.alt_description_robbery = (
-            "Les hangars portent encore les marques de votre raid : portes éventrées, "
-            "caisses brisées, drones calcinés. Les civils vous évitent du regard, le "
-            "silence oppressant rappelant le prix de vos ressources."
-        )
-        entrepots.alt_description_corruption = (
-            "Les entrepôts sont étrangement silencieux. Plusieurs caisses portent le sceau "
-            "du général Akros. Les drones de sécurité vous observent mais ne réagissent pas : "
-            "le protocole prioritaire que vous avez acheté les empêche d'intervenir."
-        )
-        prison.alt_description_after_raid = (
-            "La prison porte encore les cicatrices de votre assaut : murs éventrés, tourelles brisées, "
-            "cellules ouvertes à la hâte. L’air pue la fumée et la poussière."
-        )
-        prison.alt_description_after_missiles = (
-            "Les murs sont calcinés par les frappes orbitales. Des pans entiers se sont effondrés, "
-            "laissant la structure instable. Les systèmes électroniques grésillent encore."
-        )
-     
-
-        
-        
-
-        # --- PNJ : YARA ---
-        yara = Character(
-            "Yara",
-            "Cheffe rebelle d’Eridani, désormais en mission sur Velyra IX. "
-            "Son visage porte déjà les cicatrices de la guerre."
-        )
-
-        def talk_yara_velyra(player, game, self_char):
-            """
-            Version propre du système narratif.
-            4 états narratifs :
-                - intro non faite
-                - prison non libérée
-                - prison libérée mais Karn vivant
-                - Karn mort
-            """
-
-            # ----------------------------
-            # ÉTAPE 0 : INTRO NON FAITE
-            # ----------------------------
-            if not getattr(player, "velyra_intro_done", False):
-                player.velyra_intro_done = True
-
-                print(
-                    "Yara : « Velyra IX est pire qu’Eridani. "
-                    "Karn gouverne avec des IA marchandes et des drones. "
-                    "Chaque jour, des prisonniers sont exécutés. Parmi eux, mon frère : Narek. »\n"
-                )
-                print("Elle te fixe :\n"
-                    "On a deux options :\n"
-                    "  1️⃣ Étudier la planète (DEF ++, Moral --)\n"
-                    "  2️⃣ Attaquer immédiatement (ATK ++, pertes sévères)\n")
-
-                choix = ""
-                while choix not in ("1", "2"):
-                    choix = input("> ").strip()
-
-                if choix == "1":
-                    player.defense += 2
-                    player.moral -= 1
-                    player.reputation += 2
-                    player.velyra_study_first = True
-                    return (
-                        "Vous observez les patrouilles, les schémas de drones, les routes d’approvisionnement.\n"
-                        "Chaque nuit, pourtant, Yara reçoit des rapports d’exécutions.\n"
-                        "➡️ DEF +2, Moral -1, Réputation +2."
-                    )
-                else:
-                    dmg = player.take_damage(15)
-                    player.defense = max(0, player.defense - 1)
-                    player.resources = max(0, player.resources - 1)
-                    player.atk += 2
-                    player.moral += 1
-                    player.reputation += 2
-                    player.velyra_attack_first = True
-                    return (
-                        "Le Vigilant plonge dans l’atmosphère et subit un bombardement brutal.\n"
-                        f"➡️ PV -{dmg}, DEF -1, Ressources -1, ATK +2, Moral +1, Réputation +2."
-                    )
-
-            # ----------------------------
-            # ÉTAPE 1 : PRISON NON LIBÉRÉE
-            # ----------------------------
-            if not getattr(player, "velyra_prison_liberated", False):
-                print(
-                    "Yara : « On a localisé la prison centrale. Narek est là-bas.\n"
-                    "Mais il nous reste presque rien. »\n"
-                )
-                print(
-                    "Deux options :\n"
-                    "  1️⃣ Piller les entrepôts civils (Ressources ++, Moral ↓↓↓, Réputation ↓↓↓)\n"
-                    "  2️⃣ Corrompre un général de Karn en échange d'item (risqué, missiles possibles)\n"
-                )
-
-                choix = ""
-                while choix not in ("1", "2"):
-                    choix = input("> ").strip()
-
-                # --- Option 1 : PILLER LES CIVILS ---
-                if choix == "1":
-                    player.velyra_robbed_civilians = True
-                    player.resources += 4
-                    player.atk += 1
-                    player.moral -= 3
-                    player.reputation -= 4
-                    player.velyra_prison_liberated = True
-                    player.narek_alive = True
-
-                    return (
-                        "Vous lancez un raid brutal sur les entrepôts civils.\n"
-                        "Les hangars débordent d’armes légères, de batteries d’énergie et de caisses de munitions.\n\n"
-                        "Les familles courent se mettre à l’abri sous les tirs, des enfants hurlent, "
-                        "et les gardes mécaniques tombent un à un.\n"
-                        "Dans la panique, vos rebelles arrachent tout ce qu’ils peuvent charger : "
-                        "explosifs, blindages portatifs, chargeurs plasma.\n\n"
-                        "Avec cet arsenal improvisé, vous frappez directement la prison centrale.\n"
-                        "Les murs éclatent sous les charges volées, les tourelles se taisent, "
-                        "et les cellules explosent les unes après les autres.\n\n"
-                        "Narek surgit dans les décombres, encore enchaîné, mais vivant.\n"
-                        "Vous l’avez libéré… au prix de la confiance de tout un peuple.\n\n"
-                        "➡️ Ressources +4  |  ATK +1  |  Moral -3  |  Réputation -4."
-                    )
-
-                # --- Option 2 : CORRUPTION ---
-                import random
-                player.velyra_corrupted_general = True
-
-                rare = player.find_item("Module d'énergie stabilisé") or player.find_item("Cristal de propulsion")
-                rare_name = rare.name if rare else None
-                if rare:
-                    player.remove_item(rare)
-                    chance_bonus = 0.15
-                else:
-                    chance_bonus = 0.0
-                    print(
-                        "Vous n'avez pas d'objet rare à offrir au général.\n"
-                        "La corruption sera plus difficile...\n"
-                    )
-
-                base_chance = 0.4 + chance_bonus + max(0, player.reputation) * 0.03
-                base_chance = min(base_chance, 0.85)
-                roll = random.random()
-
-                if roll <= base_chance:
-                    # corruption réussie
-                    player.velyra_missiles_obtained = True
-                    player.resources += 2
-                    player.atk += 1
-                    player.defense += 1
-                    player.moral += 1
-                    player.reputation += 2
-                    player.velyra_prison_liberated = True
-                    player.narek_alive = True
-
-                    texte = (
-                        "Le général accepte votre offre.\n"
-                        "Grâce aux missiles orbitaux, vous détruisez la prison et libérez Narek.\n"
-                        "➡️ ATK +1, DEF +1, Moral +1, Réputation +2."
-                    )
-                    if rare_name:
-                        texte = (
-                        f"Vous offrez {rare_name} au général en échange de son aide.\n"
-                        + texte
-                        )
-                    return texte
-
-                else:
-                    # corruption ratée
-                    dmg = player.take_damage(10)
-                    player.defense = max(0, player.defense - 1)
-                    player.resources = max(0, player.resources - 1)
-                    player.moral -= 1
-                    player.reputation -= 1
-                    player.velyra_missiles_obtained = True
-                    player.velyra_prison_liberated = True
-                    player.narek_alive = True
-
-                    return (
-                        "La corruption échoue : embuscade.\n"
-                        f"➡️ PV -{dmg}, DEF -1, Ressources -1, Moral -1.\n"
-                        "Vous capturez malgré tout le terminal des missiles et libérez Narek."
-                    )
-
-            # ----------------------------
-            # ÉTAPE 2 : PRISON LIBÉRÉE, KARN VIVANT
-            # ----------------------------
-            if not getattr(player, "velyra_karn_defeated", False):
-                if getattr(player, "velyra_missiles_obtained", False):
-                    return (
-                        "Yara : « Avec les missiles, on va pulvériser la Citadelle de Karn. »\n"
-                        "➡️ Rendez-vous à la citadelle."
-                    )
-                else:
-                    return (
-                        "Yara : « On infiltrera la citadelle par les conduits de maintenance. »\n"
-                        "➡️ Rendez-vous à la citadelle."
-                    )
-
-            # ----------------------------
-            # ÉTAPE 3 : KARN MORT
-            # ----------------------------
-            return (
-                "Yara : « Velyra est libre. Grâce à toi. »\n"
-                "Narek : « Et ce n’est que le début. »"
-            )
-
-        yara.on_talk = talk_yara_velyra
-        base.add_character(yara)
-
-        # --- PNJ : Nommera, survivante civile ---
-        nommera = Character(
-            "Nommera",
-            "Une jeune femme aux mains couvertes de poussière, le regard creux mais lucide."
-        )
-
-        def talk_nommera(player, game, self_char):
-
-            # Cas 1 : PILLAGE des civils (route très négative)
-            if getattr(player, "velyra_robbed_civilians", False):
-
-                return (
-                    "Nommera : C’était vous… Je vous ai vu défoncer les portes des hangars. \n"
-                    "Son regard tremble :\n"
-                    "Vous avez pris nos vivres… nos armes… et laissé des familles dans la poussière. "
-                    "Vous avez sauvé quelqu’un là-bas, je suppose. Mais ici, on pleure encore.\n"
-                    "Elle détourne les yeux :\n"
-                    "On ne vous dénoncera pas. On n’a plus personne à qui parler, de toute façon."
-                )
-
-            # Cas 2 : CORRUPTION — deal secret avec Akros
-            if getattr(player, "velyra_corrupted_general", False):
-
-                return (
-                    "Nommera : Les drones… ils ne nous surveillent plus. \n"
-                    "Elle te fixe longuement, hésitant entre gratitude et malaise.\n"
-                    "Vous avez gagné quelque chose… mais vous avez dû payer quelqu’un pour ça. "
-                    "Le général Akros ne fait rien gratuitement. \n"
-                    "Elle croise les bras :\n"
-                    "Je ne sais pas ce que vous lui avez donné… mais ça retombe toujours sur quelqu’un. Toujours."
-                )
-
-            # Cas théorique : aucun choix encore (ne devrait jamais arriver)
-            return (
-                "Nommera : Les entrepôts sont dangereux… faites attention."
-            )
-      
-        nommera.on_talk = talk_nommera
-        entrepots.add_character(nommera)
-        
-        # --- PNJ : NAREK, frère de Yara ---
-        narek = Character(
-            "Narek",
-            "Un jeune rebelle amaigri mais déterminé, encore marqué par son emprisonnement."
-        )
-        def talk_narek(player, game, self_char):
-            """ Dialogue variant selon la route choisie pour le libérer."""
-            
-            # Route 1 : PILLAGE
-            if getattr(player, "velyra_robbed_civilians", False):
-                return (
-                    "Narek : Je t’en dois une… mais je sais ce que tu as fait.\n"
-                    "Il détourne le regard.\n"
-                    "Des familles ont souffert pour me sortir d’ici. Je vis grâce à elles."
-                )
-
-            # Route 2 : MISSILES
-            if getattr(player, "velyra_missiles_obtained", False):
-                return (
-                    "Narek : Tu as frappé juste. Les missiles… je ne les oublierai jamais.\n"
-                    "On a perdu quelques camarades dans l’explosion, mais tu m'as sauvé."
-                )
-
-            # Route neutre (ne devrait pas arriver)
-            return "Narek : « Merci de m'avoir sorti de là. »"
-        narek.on_talk = talk_narek
-        prison.add_character(narek)
-
-        # Ennemis
-
-
-        prison.add_enemy(Enemy("Drone Sentinel", hp=70, atk=10, defense=6,is_boss=False, loot=[nanomed])) 
-        citadelle.add_enemy(Enemy("Gouverneur Karn", hp=160, atk=16, defense=10, is_boss=True))
-
-        self.rooms_world2 = {
-            "Base rebelle de Velyra": base,
-            "Quartier civil": quartier,
-            "Entrepôts civils": entrepots,
-            "Prison centrale": prison,
-            "Citadelle de Karn": citadelle,
-        }
-
-
-
-    def _build_world_3(self):
-        """
-        Construit le CHAPITRE III — Aurelion Prime.
-        Version validée : infiltration OU révélation → passage par Le Nœud
-        avec choix illusions/briser → combat final ou fin sombre.
-        """
-
-        # =============== ROOMS ===============
-        district = Room(
-            "District d’Or",
-            "Un quartier luxueux où tout semble parfait : rues propres, jardins calibrés, "
-            "habitants souriants… mais dont les yeux semblent vides."
-        )
-        
-        holo = Room(
-            "Quartier des Hologrammes",
-            "Des illusions mouvantes envahissent les rues : visages qui se dédoublent, "
-            "publicités vivantes, faux souvenirs, et ombres qui n'appartiennent à personne."
-        )
-
-        node = Room(
-            "Le Nœud",
-            "Un complexe gigantesque regroupant les serveurs neuronaux d’Aurelion Prime. "
-            "Il régule émotions, souvenirs et réactions de toute la population."
-        )
-
-        palace = Room(
-            "Palais de Lumière",
-            "Un ensemble de jardins flottants, ponts de cristal et escaliers étincelants. "
-            "Les serviteurs semblent humains… mais agissent comme des programmes."
-        )
-
-        throne = Room(
-            "Salle du Trône",
-            "Une vaste pièce circulaire baignée d’or, où Seren Taal attend, immobile, "
-            "dans un halo d’illusions."
-        )
-
-        # =============== CONNECTIONS ===============
-        district.connect(holo, "E")
-        holo.connect(node, "E")
-        node.connect(palace, "E")
-        palace.connect(throne, "E")
-
-        # Assignation du game aux rooms
-        for r in (district, holo, node, palace, throne):
-            r.game = self
-
-        # =============== ALT DESCRIPTIONS ===============
-        district.alt_description_infiltrate = (
-            "Vous passez pour des habitants d’élite. Les regards sont admiratifs… mais vides."
-        )
-        district.alt_description_reveal = (
-            "Des drones vous surveillent. Les habitants gardent leurs distances, méfiants."
-        )
-
-        node.alt_description_break = (
-            "Les illusions se fissurent. Les habitants errent, effondrés, découvrant "
-            "les horreurs qu’ils ignoraient. Cris, larmes, terreur."
-        )
-        node.alt_description_keep = (
-            "Les illusions brillent comme jamais : bonheur forcé, sourires figés, "
-            "éclats de rire synthétiques."
-        )
-
-        # =============== PNJ ===============
-        citizen = Character(
-            "Citoyen doré",
-            "Un habitant riche dont les émotions sont filtrées par les serveurs du Nœud."
-        )
-
-        def talk_citizen(player, game, self_char):
-            if player.ap_choice_infiltrate:
-                return "Citoyen doré : « Vous êtes splendides. Vous avez le rang pour être ici. »"
-            if player.ap_choice_reveal:
-                return "Citoyen doré : « Vous êtes un intrus dangereux. Ne touchez à rien. »"
-            return "Citoyen doré : « Aurelion est parfait. Les autres mondes souffrent ? Ils sont faibles. »"
-
-        citizen.on_talk = talk_citizen
-        district.add_character(citizen)
-
-        glitch = Character(
-            "Habitant glitché",
-            "Son corps scintille comme un hologramme mal calibré. Sa voix tremble, en écho."
-        )
-
-        def talk_glitch(player, game, self_char):
-            if not getattr(player, "aurelion_surprise_done", False):
-                return "…v…v…vvous… n’êtes pas… attendus…"
-            return "Les murs… regardent… attention à… Seren… Taa— *signal perdu*."
-
-        glitch.on_talk = talk_glitch
-        holo.add_character(glitch)
-
-
-        # =============== ENNEMIS ===============
-        palace.add_enemy(Enemy("Gardien Blanc", hp=90, atk=22, defense=8))
-        taal = Enemy(
-            "Seren Taal",
-            hp=240,
-            atk=30,
-            defense=12,
-            is_boss=True,
-            loot=[]
-        )
-        throne.add_enemy(taal)
-
-        # =============== STOCKAGE ===============
-        self.rooms_world3 = {
-            "District d’Or": district,
-            "Quartier des Hologrammes": holo,
-            "Le Nœud": node,
-            "Palais de Lumière": palace,
-            "Salle du Trône": throne,
-        }
-
-
-
-    # =========================================================
-    #   INTRODUCTION + CHOIX DRAMATIQUE DU CRASH
-    # =========================================================
-
-    def _intro_and_crash(self):
-        """
-        Affiche l’introduction narrative et demande au joueur
-        de faire un choix moral déterminant :
-            - sauver l’équipage,
-            - ou sauver les ressources.
-
-        Ce choix modifie les statistiques du joueur
-        et oriente sa relation au monde.
-        """
-        print("En 2239, l'ESIEE lance le vaisseau interstellaire 'Vigilant' pour trouver un monde habitable.")
-        print("Une onde gravitationnelle inconnue projette l'appareil vers un système lointain.")
-        print("Réparez le Vigilant, ralliez des alliés, et décidez du destin de l'humanité.\n")
-
-        name = input("Entrez le nom de votre capitaine (laisser vide pour 'Orion Vale') : ").strip()
+        self.world = None
+        self.world1_quests = {}
+        self.world2_quests = {}
+        self.world3_quests = {}
+        self.world4_quests = {}
+        self.current_world = 1
+        self.input_func = input
+
+   # Setup player and starting room
+    def setup_player(self, player_name=None):
+        """Prompt for the player's name and place them in the starting room."""
+        name = player_name
         if not name:
-            name = "Orion Vale"
+            name = self.input_func(
+                L.PLAYER_NAME_PROMPT.format(default=L.DEFAULT_PLAYER_NAME)
+            ).strip()
+        if not name:
+            name = L.DEFAULT_PLAYER_NAME
+        self.player = Player(name)
+        self.player.current_room = self.world.get_starting_room()
 
-        start_room = self.rooms["Eridani Prime"]
-        self.player = Player(name, start_room)
+    # Setup world
+    def setup_world(self):
+        """Create the initial world and load its rooms."""
+        self.world = World(world_id=1)
+        self.rooms = self.world.rooms
 
-        print("\n🌌 CHAPITRE I — ERIDANI PRIME 🌌")
-        print("Vous vous réveillez dans un caisson cryo… Le Vigilant tremble… Un crash est imminent.\n")
+    def set_input_provider(self, provider):
+        """Override the input function used for prompts and choices."""
+        self.input_func = provider
 
-        print("🔥 Le crash est inévitable. Vous devez faire un choix :")
-        print("1️⃣ Sauver tout l'équipage (moral +2, attaque +1, ressources −2)")
-        print("2️⃣ Sauver les ressources (défense +3, ressources +2, moral −2)")
+    def intro(self):
+        """Narration d'introduction et choix initial binaire."""
+        for line in L.INTRO_LINES:
+            print(line)
+        print()
 
-        choix = ""
-        while choix not in ("1", "2"):
-            choix = input("> ").strip()
+    def choice_intro(self):
+        """Affiche le choix moral initial et applique les consequences."""
+        for line in L.CHOICE_ALERT_LINES:
+            print(line)
 
-        # Le traducteur (toujours donné, mais interprété différemment)
+        choice = ""
+        while choice not in ("1", "2"):
+            choice = self.input_func("> ").strip()
+
+        # Objet narratif commun
         translator = Item(
-            "Puce neuronale traductrice",
-            "Implant qui traduit en temps réel les langues d’Eridani.",
-            effect_type="quest",
-            value=0,
-            usable=False,
-            weight=1,
+            L.INTRO_TRANSLATOR_NAME,
+            L.INTRO_TRANSLATOR_DESC,
+            1,
         )
-        self.player.add_item(translator)
-        self.player.has_translator = True
+        self.player.inventory.append(translator)
+        self.player.weight += translator.weight
 
-        # Effets du choix initial
-        if choix == "1":
-            self.player.moral += 2
-            self.player.atk += 1
-            self.player.resources = max(0, self.player.resources - 2)
-            print("\nVous arrachez des survivants des flammes… mais perdez une partie du matériel vital.")
-            print("➡️ Un membre d’équipage utilise sa puce neuronale traductrice.\n")
-        else:
-            self.player.defense += 3
-            self.player.resources += 4
-            self.player.moral -= 2
-
-            # Objet bonus propre à ce choix
-            module = Item(
-                "Module d'énergie stabilisé",
-                "Un module récupéré intact dans les soutes. "
-                "Il améliore la stabilité du réacteur portable (+2 DEF lorsqu'utilisé).",
-                effect_type="def",
-                value=2,
+        if choice == "1":
+            self.player.origin_choice = "crew"
+            kit = Item(
+                L.INTRO_CREW_KIT_NAME,
+                L.INTRO_CREW_KIT_DESC,
+                1,
+                effect_type="heal",
+                effect_value=25,
                 usable=True,
-                weight=2,
             )
-            self.player.add_item(module)
+            self.player.inventory.append(kit)
+            self.player.weight += kit.weight
+            for line in L.CHOICE_CREW_LINES:
+                print(line)
+        else:
+            self.player.origin_choice = "resources"
+            cristal = Item(
+                L.INTRO_RESOURCE_CRYSTAL_NAME,
+                L.INTRO_RESOURCE_CRYSTAL_DESC,
+                1,
+            )
+            self.player.inventory.append(cristal)
+            self.player.weight += cristal.weight
+            self.player.has_crystal = True
+            module = Item(
+                L.INTRO_RESOURCE_MODULE_NAME,
+                L.INTRO_RESOURCE_MODULE_DESC,
+                1,
+            )
+            self.player.inventory.append(module)
+            self.player.weight += module.weight
+            for line in L.CHOICE_RESOURCES_LINES:
+                print(line)
 
-            print("\nVous scellez les compartiments pleins d’équipage pour sauver les soutes.")
-            print("\nCependant, il vous reste quelques survivants.")
-            print("➡️ La puce neuronale d’un officier vous sert désormais de traducteur.")
-            print("➡️ Vous récupérez des modules, de l’énergie et des pièces intactes…")
-            print("➡️ Vous récupérez un Module d'énergie stabilisé dans les décombres.\n")
+        print(self.get_room_view())
 
-        # Affichage de la room initiale et de l’aide
-        print(self.player.current_room.get_long_description())
-        print(self.help_text() + "\n")
+    def get_room_view(self, room=None):
+        """Retourne la description complete de la salle courante."""
+        if room is None:
+            room = self.player.current_room
+        if self.current_world != 3:
+            return room.get_long_description(self.player.stability)
+
+        description_text = self._get_world3_room_description(room)
+        lowered = description_text.lstrip().lower()
+        if lowered.startswith(("un ", "une ", "des ", "du ", "de ", "d'")):
+            body = L.ROOM_DESCRIPTION_PREFIX.format(description=description_text)
+        else:
+            body = description_text
+        return L.ROOM_LONG_DESCRIPTION_TEMPLATE.format(
+            name=room.name,
+            body=body,
+            exits=room.get_exit_string(),
+        )
+
+    def _get_world3_room_description(self, room):
+        """Retourne une description alternative du Monde 3 selon les choix narratifs."""
+        player = self.player
+        if room.name == DISTRICT_OR:
+            if player.ap_choice_infiltrate and getattr(room, "alt_description_infiltrate", None):
+                return room.alt_description_infiltrate
+            if player.ap_choice_reveal and getattr(room, "alt_description_reveal", None):
+                return room.alt_description_reveal
+        if room.name == NOEUD:
+            if player.ap_break_illusions and getattr(room, "alt_description_break", None):
+                return room.alt_description_break
+            if player.ap_keep_illusions and getattr(room, "alt_description_keep", None):
+                return room.alt_description_keep
+        return room.description
+
+    def setup_commands(self):
+        """Register all available command handlers."""
+        self.commands["help"] = Command(
+            "help", L.COMMAND_HELP_STRINGS["help"], Actions.help, 0
+        )
+        self.commands["quit"] = Command(
+            "quit", L.COMMAND_HELP_STRINGS["quit"], Actions.quit, 0
+        )
+        self.commands["go"] = Command(
+            "go",
+            L.COMMAND_HELP_STRINGS["go"],
+            Actions.go,
+            1,
+        )
+        self.commands["history"] = Command(
+            "history", L.COMMAND_HELP_STRINGS["history"], Actions.history, 0
+        )
+        self.commands["back"] = Command(
+            "back", L.COMMAND_HELP_STRINGS["back"], Actions.back, 0
+        )
+        self.commands["look"] = Command("look", L.COMMAND_HELP_STRINGS["look"], Actions.look, 0)
+        self.commands["take"] = Command("take", L.COMMAND_HELP_STRINGS["take"], Actions.take, 1)
+        self.commands["drop"] = Command("drop", L.COMMAND_HELP_STRINGS["drop"], Actions.drop, 1)
+        self.commands["use"] = Command("use", L.COMMAND_HELP_STRINGS["use"], Actions.use, 1)
+        self.commands["check"] = Command("check", L.COMMAND_HELP_STRINGS["check"], Actions.check, 0)
+        self.commands["status"] = Command(
+            "status",
+            L.COMMAND_HELP_STRINGS["status"],
+            Actions.status,
+            0,
+        )
+        self.commands["talk"] = Command(
+            "talk", L.COMMAND_HELP_STRINGS["talk"], Actions.talk, 1
+        )
+        self.commands["attack"] = Command(
+            "attack", L.COMMAND_HELP_STRINGS["attack"], Actions.attack, 1
+        )
+        self.commands["map"] = Command("map", L.COMMAND_HELP_STRINGS["map"], Actions.map, 0)
+        self.commands["quests"] = Command(
+            "quests", L.COMMAND_HELP_STRINGS["quests"], Actions.quests, 0
+        )
+        self.commands["quest"] = Command(
+            "quest", L.COMMAND_HELP_STRINGS["quest"], Actions.quest, 1
+        )
+        self.commands["activate"] = Command(
+            "activate", L.COMMAND_HELP_STRINGS["activate"], Actions.activate, 1
+        )
+        self.commands["rewards"] = Command(
+            "rewards", L.COMMAND_HELP_STRINGS["rewards"], Actions.rewards, 0
+        )
+
+    def _setup_quests(self):
+        """Initialize all quests."""
+        self._setup_world1_quests()
 
 
+    def _setup_world1_quests(self):
+        """Initialise les quetes specifiques au Monde 1 (Eridani Prime)."""
+        data = L.QUESTS_WORLD1
+        quest_1 = Quest(
+            title=data[1]["title"],
+            description=data[1]["description"],
+            objectives=data[1]["objectives"],
+            quest_id=1,
+            state=STATE_AVAILABLE,
+        )
+        quest_2 = Quest(
+            title=data[2]["title"],
+            description=data[2]["description"],
+            objectives=data[2]["objectives"],
+            quest_id=2,
+            state=STATE_LOCKED,
+        )
+        quest_3 = Quest(
+            title=data[3]["title"],
+            description=data[3]["description"],
+            objectives=data[3]["objectives"],
+            quest_id=3,
+            state=STATE_LOCKED,
+        )
+        quest_4 = Quest(
+            title=data[4]["title"],
+            description=data[4]["description"],
+            objectives=data[4]["objectives"],
+            quest_id=4,
+            state=STATE_LOCKED,
+        )
 
-    # =========================================================
-    #   Transition vers le Monde 2 — Velyra IX
-    # =========================================================
-    def transition_to_world_2(self):
-            """
-            Départ d’Eridani Prime et arrivée sur Velyra IX.
-            Appelée après la défaite de Vorn.
-            """
-            
-            if self.player.world2_started:
-                return  # Empêche de relancer 50 fois
+        self.world1_quests = {
+            1: quest_1,
+            2: quest_2,
+            3: quest_3,
+            4: quest_4,
+        }
 
-            self.player.world2_started = True
+        for quest in self.world1_quests.values():
+            self.player.quest_manager.add_quest(quest)
 
-            self.player.log("Le Vigilant a quitté Eridani Prime en direction de Velyra IX.")
+        quest_1.set_state(STATE_ACTIVE)
+        if quest_1 not in self.player.quest_manager.active_quests:
+            self.player.quest_manager.active_quests.append(quest_1)
 
-            print("\n🚀 Le Vigilant s’élève au-dessus d’Eridani Prime.")
-            print("Les mineurs et les rebelles acclament votre nom alors que le vaisseau perce les nuages.")
-            print("Quelques jours plus tard, les capteurs détectent Velyra IX : une planète-machine sous la tyrannie de Karn.\n")
+        self.player.current_world_quests = [quest_1, quest_2, quest_3, quest_4]
 
-            # Construction du monde 2
-            self._build_world_2()
-            start_room = self.rooms_world2["Base rebelle de Velyra"]
-            self.player.current_room = start_room
+    def _setup_world2_quests(self):
+        """Initialize world 2 quests and reset the quest manager."""
+        data = L.QUESTS_WORLD2
+        self.world2_quests = {}
+        self.player.quest_manager.reset()
 
-            print("🌌 CHAPITRE II — VELYRA IX 🌌\n")
-            print(start_room.get_long_description())
-            print("\n" + self.help_text() + "\n")
+        quest_1 = Quest(
+            title=data[1]["title"],
+            description=data[1]["description"],
+            objectives=data[1]["objectives"],
+            quest_id=1,
+            state=STATE_AVAILABLE,
+        )
+        quest_2 = Quest(
+            title=data[2]["title"],
+            description=data[2]["description"],
+            objectives=data[2]["objectives"],
+            quest_id=2,
+            state=STATE_LOCKED,
+        )
+        quest_3 = Quest(
+            title=data[3]["title"],
+            description=data[3]["description"],
+            objectives=data[3]["objectives"],
+            quest_id=3,
+            state=STATE_LOCKED,
+        )
+        quest_4 = Quest(
+            title=data[4]["title"],
+            description=data[4]["description"],
+            objectives=data[4]["objectives"],
+            quest_id=4,
+            state=STATE_LOCKED,
+        )
 
-            # ⚠ On force immédiatement les deux grands choix avec Yara
-            yara = start_room.find_character("Yara")
-            if yara and yara.on_talk:
-                print("\nYara s’avance vers vous dès votre arrivée.\n")
+        self.world2_quests = {
+            1: quest_1,
+            2: quest_2,
+            3: quest_3,
+            4: quest_4,
+        }
 
-                # 1) Étudier / Attaquer
-                texte = yara.on_talk(self.player, self, yara)
-                if texte:
-                    print(texte + "\n")
+        for quest in self.world2_quests.values():
+            self.player.quest_manager.add_quest(quest)
 
-                # 2) Voler les civils / Corrompre le général
-                texte2 = yara.on_talk(self.player, self, yara)
-                if texte2:
-                    print(texte2 + "\n")
+        quest_1.set_state(STATE_ACTIVE)
+        if quest_1 not in self.player.quest_manager.active_quests:
+            self.player.quest_manager.active_quests.append(quest_1)
 
-            print("Demandez à Yara le plan pour la suite. \nVous pouvez ensuite explorer Velyra IX. Utilisez 'g E' pour rejoindre le Quartier civil.\n")
+        self.player.current_world_quests = [quest_1, quest_2, quest_3, quest_4]
 
+    def _setup_world3_quests(self):
+        """Initialise les quetes du Monde 3 (Aurelion Prime)."""
+        data = L.QUESTS_WORLD3
+        self.world3_quests = {}
+        self.player.quest_manager.reset()
 
-    # =========================================================
-    #   ATTACK SURPRISE — Quartier civil, Monde 2
-    # =========================================================
-    def _attack_surprise_velyra(self):
-        """
-        Embuscade dans le Quartier civil : 
-        3 ennemis attaquent l’un après l’autre via le vrai système de combat.
-        """
-        print("\n⚠️ EMBUSCADE ! Des drones surgissent des toits et ouvrent le feu !\n")
+        quest_1 = Quest(
+            title=data[1]["title"],
+            description=data[1]["description"],
+            objectives=data[1]["objectives"],
+            quest_id=1,
+            state=STATE_ACTIVE,
+        )
+        quest_2 = Quest(
+            title=data[2]["title"],
+            description=data[2]["description"],
+            objectives=data[2]["objectives"],
+            quest_id=2,
+            state=STATE_LOCKED,
+        )
+        quest_3 = Quest(
+            title=data[3]["title"],
+            description=data[3]["description"],
+            objectives=data[3]["objectives"],
+            quest_id=3,
+            state=STATE_LOCKED,
+        )
+        quest_4 = Quest(
+            title=data[4]["title"],
+            description=data[4]["description"],
+            objectives=data[4]["objectives"],
+            quest_id=4,
+            state=STATE_LOCKED,
+        )
+        quest_5 = Quest(
+            title=data[5]["title"],
+            description=data[5]["description"],
+            objectives=data[5]["objectives"],
+            quest_id=5,
+            state=STATE_LOCKED,
+        )
+        quest_6 = Quest(
+            title=data[6]["title"],
+            description=data[6]["description"],
+            objectives=data[6]["objectives"],
+            quest_id=6,
+            state=STATE_LOCKED,
+        )
 
-        # Les ennemis se battent dans CET ordre
-        enemies = [
-            Enemy("Drone éclaireur", hp=35, atk=7, defense=2),
-            Enemy("Drone éclaireur", hp=35, atk=7, defense=2),
-            Enemy("Drone de patrouille", hp=55, atk=10, defense=3),
+        self.world3_quests = {
+            1: quest_1,
+            2: quest_2,
+            3: quest_3,
+            4: quest_4,
+            5: quest_5,
+            6: quest_6,
+        }
+
+        for quest in self.world3_quests.values():
+            self.player.quest_manager.add_quest(quest)
+
+        if quest_1 not in self.player.quest_manager.active_quests:
+            self.player.quest_manager.active_quests.append(quest_1)
+
+        self.player.current_world_quests = [
+            quest_1,
+            quest_2,
+            quest_3,
+            quest_4,
+            quest_5,
+            quest_6,
         ]
 
-        for e in enemies:
-            print(f"Un {e.name} vous attaque !\n")
-            
-            # On place l’ennemi dans la room actuelle pour le système normal
-            self.player.current_room.enemies.append(e)
+    def _setup_world4_quests(self):
+        """Initialise les quetes du Monde 4 (Nova Terra)."""
+        data = L.QUESTS_WORLD4
+        self.world4_quests = {}
+        self.player.quest_manager.reset()
 
-            # Combat obligatoire
-            output = actions.attack(self, e.name)
-            print(output)
+        quest_1 = Quest(
+            title=data[1]["title"],
+            description=data[1]["description"],
+            objectives=data[1]["objectives"],
+            quest_id=1,
+            state=STATE_ACTIVE,
+        )
+        station_objective = (
+            data[2]["objectives"]["explore"][0]
+            if self.player.novaterra_explored_station
+            else data[2]["objectives"]["ignore"][0]
+        )
+        quest_2 = Quest(
+            title=data[2]["title"],
+            description=data[2]["description"],
+            objectives=[station_objective],
+            quest_id=2,
+            state=STATE_LOCKED,
+        )
+        quest_3 = Quest(
+            title=data[3]["title"],
+            description=data[3]["description"],
+            objectives=data[3]["objectives"],
+            quest_id=3,
+            state=STATE_LOCKED,
+        )
 
-            # Le combat continue tant que l’ennemi n’est pas mort
-            while e.is_alive() and self.player.is_alive():
-                output = actions.attack(self, e.name)
-                print(output)
+        self.world4_quests = {
+            1: quest_1,
+            2: quest_2,
+            3: quest_3,
+        }
 
-            # Nettoyage : enlever l’ennemi
-            self.player.current_room.enemies.remove(e)
+        for quest in self.world4_quests.values():
+            self.player.quest_manager.add_quest(quest)
 
-            if not self.player.is_alive():
-                print("Vous êtes mort. Game Over.")
-                self.running = False
+        if quest_1 not in self.player.quest_manager.active_quests:
+            self.player.quest_manager.active_quests.append(quest_1)
+
+        self.player.current_world_quests = [quest_1, quest_2, quest_3]
+
+    def _is_current_world_complete(self):
+        """Return True when the current world's quests are all completed."""
+        quests = self.player.current_world_quests
+        if not quests:
+            return False
+        return all(quest.state == STATE_COMPLETED for quest in quests)
+
+    def _check_world_transition(self):
+        """Trigger a world transition when the current world is complete."""
+        if not self._is_current_world_complete():
+            return
+        self.transition_to_next_world()
+
+    def transition_to_next_world(self):
+        """Advance to the next world and initialize its content."""
+        if self.current_world == 1:
+            print(L.WORLD1_TRANSITION_TEXT)
+
+            self.current_world = 2
+            self.world = World(world_id=2)
+            self.rooms = self.world.rooms
+            self.player.current_room = self.world.get_starting_room()
+            self.player.history = []
+            self._setup_world2_quests()
+            self.player.hp = self.player.max_hp
+            print(self.get_room_view())
+            return
+
+        if self.current_world == 2:
+            if not self.player.karn_aftermath_done:
+                return
+            print(L.WORLD2_TRANSITION_TEXT)
+            self.current_world = 3
+            self.world = World(world_id=3)
+            self.rooms = self.world.rooms
+            self.player.current_room = self.world.get_starting_room()
+            self.player.history = []
+            self._setup_world3_quests()
+            self.player.hp = self.player.max_hp
+            self._handle_aurelion_posture_choice()
+            self.update_world3_quests()
+            self.player.quest_manager.check_room_objectives(self.player.current_room.name)
+            print(self.get_room_view())
+            return
+
+        if self.current_world == 3:
+            self.transition_to_world4()
+            return
+
+    def update_world1_quests(self, activated_quest_id=None):
+        """Met à jour l'état des quêtes Monde 1 en fonction des flags joueur."""
+        if self.current_world != 1:
+            return
+        q1 = self.world1_quests.get(1)
+        if q1 and q1.state == STATE_ACTIVE and not q1.is_completed and self.player.met_ralen:
+            q1.complete_objective(q1.objectives[0], self.player)
+            if q1.is_completed and q1 in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(q1)
+
+        q2 = self.world1_quests.get(2)
+        if q1 and q1.is_completed and q2 and q2.state == STATE_LOCKED:
+            q2.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q2.quest_id)
+
+        if (
+            q2
+            and q2.state == STATE_ACTIVE
+            and not q2.is_completed
+            and self.player.patrollers_defeated
+        ):
+            q2.complete_objective(q2.objectives[0], self.player)
+            if q2.is_completed and q2 in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(q2)
+
+        q3 = self.world1_quests.get(3)
+        if q2 and q2.is_completed and q3 and q3.state == STATE_LOCKED:
+            q3.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q3.quest_id)
+
+        if q3 and q3.state == STATE_ACTIVE and not q3.is_completed:
+            if self.player.has_crystal:
+                if activated_quest_id == 3:
+                    print(L.CRYSTAL_REALIZATION_TEXT)
+                q3.complete_objective(q3.objectives[0], self.player)
+                if q3.is_completed and q3 in self.player.quest_manager.active_quests:
+                    self.player.quest_manager.active_quests.remove(q3)
+
+        q4 = self.world1_quests.get(4)
+        if q3 and q3.is_completed and q4 and q4.state == STATE_LOCKED:
+            q4.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q4.quest_id)
+
+        if q4 and q4.state == STATE_ACTIVE and not q4.is_completed and self.player.vorn_defeated:
+            q4.complete_objective(q4.objectives[0], self.player)
+            if q4.is_completed and q4 in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(q4)
+
+        self._check_world_transition()
+
+    def check_world1_npc_bonus(self):
+        """Accorde le bonus de stabilité si tous les PNJ clés ont été rencontrés."""
+        if self.current_world != 1:
+            return
+        player = self.player
+        if player.world1_npcs_bonus:
+            return
+
+        if (
+            player.met_ralen and player.met_malek and player.met_marchand
+            and player.met_yara and player.met_nommera
+        ):
+            player.world1_npcs_bonus = True
+            self.adjust_stability(1)
+
+    def handle_merchant_choice(self):
+        """Gere le choix moral du marchand et ses effets sur la stabilite."""
+        player = self.player
+        if player.merchant_sacrifice or player.merchant_refused:
+            return
+
+        for line in L.MERCHANT_CHOICE_LINES:
+            print(line)
+        choice = ""
+        while choice not in ("1", "2"):
+            choice = self.input_func("> ").strip()
+
+        if choice == "1":
+            self.adjust_stability(-3)
+            if not player.has_crystal:
+                cristal = Item(
+                    "Cristal de propulsion",
+                    "Un cristal intact, essentiel pour reparer le vaisseau.",
+                    1,
+                )
+                player.inventory.append(cristal)
+                player.weight += cristal.weight
+            player.has_crystal = True
+            player.merchant_sacrifice = True
+            print(L.MERCHANT_ACCEPTED_TEXT)
+        else:
+            self.adjust_stability(1)
+            player.merchant_refused = True
+            player.met_yara = True
+            print(L.MERCHANT_REFUSED_TEXT)
+            if not player.has_crystal:
+                print(L.MERCHANT_NO_CRYSTAL_TEXT)
+                self.finished = True
                 return
 
-        print("\nVous survivez à l'embuscade !")
-        print("➡️ Ressources +1 | Réputation +1\n")
-        self.player.resources += 1
-        self.player.reputation += 1
+        self.update_world1_quests()
+        self.check_world1_npc_bonus()
 
+    def handle_world1_talk(self, character_name):
+        """Met a jour les flags Monde 1 apres un dialogue."""
+        if self.current_world != 1:
+            return
+        name = character_name.lower()
+        if name == "ralen":
+            self.player.met_ralen = True
+        elif "malek" in name:
+            self.player.met_malek = True
+        elif name == "marchand":
+            self.player.met_marchand = True
+        elif name == "yara":
+            self.player.met_yara = True
+        elif name == "nommera":
+            self.player.met_nommera = True
 
-    # =========================================================
-    #   ATTACK SURPRISE — Quartier des Hologrammes, Monde 3
-    # =========================================================
-    def _attack_surprise_aurelion(self):
-        """
-        Attaque surprise dans le Quartier des Hologrammes.
-        Les illusions 'glitchent', deux vagues d'ennemis holographiques attaquent.
-        """
-        print("\n⚠️ Les hologrammes se déchirent autour de vous…")
-        print("Des visages se dédoublent, des passants se figent, puis explosent en lumière.")
-        print("Une voix froide murmure : « Anomalie cognitive détectée. Neutralisation. »\n")
+        self.update_world1_quests()
+        self.check_world1_npc_bonus()
 
-        # Ennemis (vague 1)
-        enemies_wave1 = [
-            Enemy("Spectre Holographique", hp=45, atk=12 + (2 if self.player.ap_choice_reveal else 0), defense=3),
-            Enemy("Spectre Holographique", hp=45, atk=12 + (2 if self.player.ap_choice_reveal else 0), defense=3),
-        ]
+    def handle_world2_talk(self, character_name):
+        """Met a jour les flags Monde 2 apres un dialogue."""
+        if self.current_world != 2:
+            return
+        name = character_name.lower()
+        if name == "yara":
+            self.player.velyra_met_leader = True
+        elif name == "narek":
+            self.player.velyra_narek_resolved = True
 
-        # Ennemis (vague 2)
-        enemies_wave2 = [
-            Enemy("Garde Éclaté", hp=60, atk=16 + (3 if self.player.ap_choice_reveal else 0), defense=4),
-        ]
+        self.update_world2_quests()
 
-        all_waves = [enemies_wave1, enemies_wave2]
+    def handle_world3_talk(self, character_name):
+        """Met a jour les flags Monde 3 apres un dialogue."""
+        if self.current_world != 3:
+            return
+        name = character_name.lower()
+        if name == "citoyen dore":
+            self.player.ap_citizen_spoken = True
+        elif name == "habitant glitche":
+            self.player.ap_glitch_spoken = True
 
-        for wave in all_waves:
-            for enemy in wave:
-                print(f"Un {enemy.name} surgit de la lumière fracturée !\n")
-                self.player.current_room.enemies.append(enemy)
+        self.update_world3_quests()
 
-                output = actions.attack(self, enemy.name)
-                print(output)
+    def handle_world4_talk(self, character_name):
+        """Met a jour les flags Monde 4 apres un dialogue."""
+        if self.current_world != 4:
+            return
+        name = character_name.lower()
+        if name in ("yara", "narek", "le guide"):
+            self.player.novaterra_companion_spoken = True
 
-                while enemy.is_alive() and self.player.is_alive():
-                    output = actions.attack(self, enemy.name)
-                    print(output)
+        self.update_world4_quests()
 
-                self.player.current_room.enemies.remove(enemy)
-
-                if not self.player.is_alive():
-                    print("Vous êtes mort. Game Over.")
-                    self.running = False
-                    return
-
-        print("\n✨ Les illusions se referment lentement… mais quelque chose a changé.")
-        print("➡️ Moral +1 | Réputation +1\n")
-
-        self.player.moral += 1
-        self.player.reputation += 1
-
-
-    # =========================================================
-    #   FIN DU MONDE 2 — Choix final
-    # =========================================================
-    def end_world_2(self):
-        """
-        Épilogue du Chapitre II après la mort de Karn.
-        Gère la présence ou non de la nanomédecine et le choix final :
-            - sauver Yara
-            - sauver Narek
-            - ou aucun si l'item n'existe pas.
-        """
-
-        print("\nLa Citadelle s'effondre dans un rugissement métallique.")
-        print("Les IA se taisent une à une… Velyra IX respire enfin.\n")
+    def update_world2_quests(self):
+        """Met a jour l'etat des quetes Monde 2 en fonction des actions du joueur."""
+        if self.current_world != 2:
+            return
 
         player = self.player
+        q1 = self.world2_quests.get(1)
+        q2 = self.world2_quests.get(2)
+        q3 = self.world2_quests.get(3)
+        q4 = self.world2_quests.get(4)
 
-        # Vérifier présence nanomédecine
-        nano = player.find_item("Dose de Nanomédecine")
+        if not player.velyra_resources_secured and player.has_item(
+            L.ITEM_DEFINITIONS["keycard"]["name"]
+        ):
+            player.velyra_resources_secured = True
 
-        print("Dans les décombres… deux silhouettes immobiles.")
-        print("Yara, ta commandante rebelle… Et Narek, son frère.\n")
-        print("Ils sont tous les deux grièvement blessés. Ils ne survivront pas longtemps.\n")
+        if q1 and q1.state == STATE_ACTIVE and not q1.is_completed:
+            if player.velyra_method:
+                q1.complete_objective(q1.objectives[0], player)
+                if q1.is_completed and q1 in self.player.quest_manager.active_quests:
+                    self.player.quest_manager.active_quests.remove(q1)
 
-        # -------------------------------------------------------------------------
-        # CAS 1 — PAS DE NANOMÉDECINE : aucun ne peut survivre.
-        # -------------------------------------------------------------------------
-        if not nano:
-            print("❌ Vous fouillez rapidement votre inventaire…")
-            print("Mais il ne reste PLUS aucune dose de nanomédecine.\n")
-            print("Yara et Narek vous regardent faiblement…")
-            print("Leurs mains se serrent. Ils meurent ensemble, en héros silencieux.\n")
+        if q1 and q1.is_completed and q2 and q2.state == STATE_LOCKED:
+            q2.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q2.quest_id)
 
-            # Conséquences sans choix
-            player.moral -= 2
-            player.reputation += 3
+        if q2 and q2.state == STATE_ACTIVE and not q2.is_completed:
+            if player.has_item(L.ITEM_DEFINITIONS["keycard"]["name"]):
+                q2.complete_objective(q2.objectives[0], player)
+                if q2.is_completed and q2 in self.player.quest_manager.active_quests:
+                    self.player.quest_manager.active_quests.remove(q2)
 
-            print("➡️ Moral -2 | Réputation +3\n")
-            print("Les rebelles vous regardent avec gravité, mais sans colère :")
-            print("« Tu n’avais pas le choix… »\n")
+        if q2 and q2.is_completed and q3 and q3.state == STATE_LOCKED:
+            q3.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q3.quest_id)
 
-            self._end_velyra_cinematic()
-            self.player.aurelion_ready = True
+        if q3 and q3.state == STATE_ACTIVE and not q3.is_completed:
+            if player.velyra_narek_resolved:
+                q3.complete_objective(q3.objectives[0], player)
+                if q3.is_completed and q3 in self.player.quest_manager.active_quests:
+                    self.player.quest_manager.active_quests.remove(q3)
+
+        if q3 and q3.is_completed and q4 and q4.state == STATE_LOCKED:
+            q4.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q4.quest_id)
+
+        if q4 and q4.state == STATE_ACTIVE and not q4.is_completed:
+            if player.karn_defeated:
+                q4.complete_objective(q4.objectives[0], player)
+                if q4.is_completed and q4 in self.player.quest_manager.active_quests:
+                    self.player.quest_manager.active_quests.remove(q4)
+
+        if q4 and q4.is_completed:
+            self._check_world_transition()
+
+    def update_world3_quests(self):
+        """Met a jour l'etat des quetes Monde 3 en fonction des actions du joueur."""
+        if self.current_world != 3:
             return
 
-        # -------------------------------------------------------------------------
-        # CAS 2 — NANOMÉDECINE DISPONIBLE : choix final.
-        # -------------------------------------------------------------------------
+        player = self.player
+        q1 = self.world3_quests.get(1)
+        q2 = self.world3_quests.get(2)
+        q3 = self.world3_quests.get(3)
+        q4 = self.world3_quests.get(4)
+        q5 = self.world3_quests.get(5)
+        q6 = self.world3_quests.get(6)
 
-        print("Vous n’avez qu’une seule dose de nanomédecine.")
-        print("Un seul survivra.\n")
-        print("Qui sauvez-vous ?\n")
-        print("1️⃣ YARA — La rebelle cheffe et stratège")
-        print("2️⃣ NAREK — Son frère, le symbole de l’espoir populaire\n")
+        if q1 and q1.state == STATE_ACTIVE and not q1.is_completed:
+            if not (player.ap_choice_infiltrate or player.ap_choice_reveal):
+                self._handle_aurelion_posture_choice()
+            if player.ap_choice_infiltrate or player.ap_choice_reveal:
+                q1.complete_objective(q1.objectives[0], player)
+                if q1.is_completed and q1 in self.player.quest_manager.active_quests:
+                    self.player.quest_manager.active_quests.remove(q1)
 
-        choix = ""
-        while choix not in ("1", "2"):
-            choix = input("> ").strip()
+        if q1 and q1.is_completed and q2 and q2.state == STATE_LOCKED:
+            q2.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q2.quest_id)
 
-        # Utilisation de l’item (retiré de l’inventaire)
-        player.remove_item(nano)
+        if q2 and q2.state == STATE_ACTIVE and not q2.is_completed:
+            if player.current_room.name == DISTRICT_OR:
+                q2.complete_objective(q2.objectives[0], player)
+            if player.ap_citizen_spoken:
+                q2.complete_objective(q2.objectives[1], player)
+            if (
+                player.current_room.name == QUARTIER_HOLO
+                or any(room.name == QUARTIER_HOLO for room in player.history)
+            ):
+                q2.complete_objective(q2.objectives[2], player)
+            if q2.is_completed and q2 in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(q2)
 
-        # --- Sauver YARA ---
-        if choix == "1":
-            print("\n💉 Vous injectez la dose à Yara.")
-            print("Elle respire à nouveau… mais ses yeux s’emplissent de larmes.")
-            print("Narek murmure : « Je t’aime… Sois forte. » avant de s’éteindre.\n")
+        if q2 and q2.is_completed and q3 and q3.state == STATE_LOCKED:
+            q3.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q3.quest_id)
 
-            # Stats
-            player.moral += 1
-            player.reputation += 1
-            player.atk += 1
+        if q3 and q3.state == STATE_ACTIVE and not q3.is_completed:
+            if player.attack_holo_done:
+                q3.complete_objective(q3.objectives[0], player)
+            if player.ap_glitch_spoken:
+                q3.complete_objective(q3.objectives[1], player)
+            if q3.is_completed and q3 in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(q3)
 
-            print("➡️ Moral +1 | Réputation +1 | ATK +1\n")
-            print("Yara jure de continuer le combat à ses côtés.\n")
+        if q3 and q3.is_completed and q4 and q4.state == STATE_LOCKED:
+            q4.set_state(STATE_AVAILABLE)
 
-        # --- Sauver NAREK ---
+        if q4 and q4.state == STATE_AVAILABLE and player.current_room.name == NOEUD:
+            self.player.quest_manager.activate_quest(q4.quest_id)
+
+        if q4 and q4.state == STATE_ACTIVE and not q4.is_completed:
+            if not (player.ap_break_illusions or player.ap_keep_illusions):
+                self._handle_aurelion_node_choice()
+            if player.ap_break_illusions or player.ap_keep_illusions:
+                q4.complete_objective(q4.objectives[0], player)
+                if q4.is_completed and q4 in self.player.quest_manager.active_quests:
+                    self.player.quest_manager.active_quests.remove(q4)
+
+        if q4 and q4.is_completed and q5 and q5.state == STATE_LOCKED:
+            q5.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q5.quest_id)
+
+        if q5 and q5.state == STATE_ACTIVE and not q5.is_completed:
+            if (
+                player.current_room.name == PALAIS_LUMIERE
+                or any(room.name == PALAIS_LUMIERE for room in player.history)
+            ):
+                q5.complete_objective(q5.objectives[0], player)
+            if (
+                player.current_room.name == SALLE_TRONE
+                or any(room.name == SALLE_TRONE for room in player.history)
+            ):
+                q5.complete_objective(q5.objectives[1], player)
+            if q5.is_completed and q5 in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(q5)
+
+        if q5 and q5.is_completed and q6 and q6.state == STATE_LOCKED:
+            q6.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q6.quest_id)
+
+        if q6 and q6.state == STATE_ACTIVE and not q6.is_completed:
+            if player.ap_taal_confronted:
+                q6.complete_objective(q6.objectives[0], player)
+            if player.ap_taal_alliance or player.ap_taal_dead:
+                q6.complete_objective(q6.objectives[1], player)
+                if q6.is_completed and q6 in self.player.quest_manager.active_quests:
+                    self.player.quest_manager.active_quests.remove(q6)
+
+    def update_world4_quests(self):
+        """Met a jour l'etat des quetes Monde 4 en fonction des actions du joueur."""
+        if self.current_world != 4:
+            return
+
+        player = self.player
+        q1 = self.world4_quests.get(1)
+        q2 = self.world4_quests.get(2)
+        q3 = self.world4_quests.get(3)
+
+        if q1 and q1.state == STATE_ACTIVE and not q1.is_completed:
+            if (
+                player.current_room.name == LANDING_VALLEY
+                or any(room.name == LANDING_VALLEY for room in player.history)
+            ):
+                q1.complete_objective(q1.objectives[0], player)
+            if player.novaterra_observed_planet:
+                q1.complete_objective(q1.objectives[1], player)
+            if player.novaterra_companion_spoken:
+                q1.complete_objective(q1.objectives[2], player)
+            if q1.is_completed and q1 in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(q1)
+
+        if q1 and q1.is_completed and q2 and q2.state == STATE_LOCKED:
+            q2.set_state(STATE_AVAILABLE)
+            self.player.quest_manager.activate_quest(q2.quest_id)
+
+        if q2 and q2.state == STATE_ACTIVE and not q2.is_completed:
+            objective = (
+                L.QUESTS_WORLD4[2]["objectives"]["explore"][0]
+                if player.novaterra_explored_station
+                else L.QUESTS_WORLD4[2]["objectives"]["ignore"][0]
+            )
+            q2.complete_objective(objective, player)
+            if q2.is_completed and q2 in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(q2)
+
+        if q2 and q2.is_completed and q3 and q3.state == STATE_LOCKED:
+            q3.set_state(STATE_AVAILABLE)
+
+        if q3 and q3.state == STATE_AVAILABLE:
+            if (
+                player.current_room.name == ANCIENT_NEXUS
+                or any(room.name == ANCIENT_NEXUS for room in player.history)
+            ):
+                self.player.quest_manager.activate_quest(q3.quest_id)
+                q3.complete_objective(q3.objectives[0], player)
+                listened = q3.complete_objective(q3.objectives[1], player)
+                if listened:
+                    print(L.NEXUS_LISTEN_TEXT)
+
+    def check_global_defeat(self):
+        """Verifie la condition de defaite globale liee a la stabilite."""
+        if self.finished:
+            return
+        if self.player.stability <= 0:
+            self._handle_mental_collapse()
+
+    def adjust_stability(self, amount):
+        """Ajuste la stabilite globale et declenche le feedback narratif."""
+        message, died = self.player.modify_stability(amount)
+        if message:
+            print(f"\n{message}\n")
+        if died:
+            self._handle_mental_collapse()
+
+    def _handle_mental_collapse(self):
+        """Affiche la mort narrative liee a l'effondrement mental."""
+        print(L.MENTAL_COLLAPSE_TEXT)
+        self.finished = True
+
+    def _handle_karn_aftermath(self):
+        """Gere le choix final apres la chute de Karn."""
+        player = self.player
+        if player.karn_aftermath_done:
+            return
+        player.karn_aftermath_done = True
+
+        nanomed_name = L.ITEM_DEFINITIONS["nanomedicine"]["name"]
+        if player.has_item(nanomed_name):
+            print(L.KARN_AFTERMATH_PROMPT)
+            choice = ""
+            while choice not in ("1", "2", "yara", "narek", "y", "n"):
+                choice = self.input_func("> ").strip().lower()
+
+            for item in list(player.inventory):
+                if item.name.lower() == nanomed_name.lower():
+                    player.inventory.remove(item)
+                    player.weight -= item.weight
+                    break
+
+            if choice in ("1", "yara", "y"):
+                player.saved_yara = True
+                player.narek_dead = True
+                print(L.KARN_AFTERMATH_YARA)
+            else:
+                player.saved_narek = True
+                player.yara_dead = True
+                print(L.KARN_AFTERMATH_NAREK)
+
+            self.adjust_stability(1)
+            return
+
+        player.yara_dead = True
+        player.narek_dead = True
+        print(L.KARN_AFTERMATH_NONE)
+        self.adjust_stability(-1)
+
+    def _handle_aurelion_posture_choice(self):
+        """Propose le choix d'infiltration ou de revelation en debut d'Aurelion."""
+        player = self.player
+        if player.ap_choice_infiltrate or player.ap_choice_reveal:
+            return
+
+        print(L.AURELION_POSTURE_LINES)
+        for line in L.AURELION_POSTURE_OPTIONS:
+            print(line)
+
+        choice = ""
+        while choice not in ("1", "2"):
+            choice = self.input_func("> ").strip()
+
+        if choice == "1":
+            player.ap_choice_infiltrate = True
+            print(L.AURELION_POSTURE_INFILTRATE)
         else:
-            print("\n💉 Vous injectez la dose à Narek.")
-            print("Il ouvre les yeux… juste le temps de voir sa sœur mourir.")
-            print("Elle murmure : « Continue… pour nous. » avant de s'éteindre.\n")
+            player.ap_choice_reveal = True
+            print(L.AURELION_POSTURE_REVEAL)
 
-            # Stats
-            player.moral -= 1
-            player.reputation += 2
-            player.defense += 1
-
-            print("➡️ Moral -1 | Réputation +2 | DEF +1\n")
-            print("Narek jure de porter la flamme de la rébellion.\n")
-        self._end_velyra_cinematic()
-        self.player.aurelion_ready = True
-
-    # =========================================================
-    #   CINÉMATIQUE DE FIN DE VELYRA IX
-    # =========================================================
-    def _end_velyra_cinematic(self):
-        """ Cinematic de fin de Velyra IX, après le choix final. """
-        print("\nFIN DE LA LIBÉRATION DE VELYRA IX\n")
-        print("Les rebelles t’entourent. Certains pleurent, d’autres crient victoire.")
-        print("Les citoyens émergent des ruines, voyant pour la première fois un ciel sans drones.\n")
-
-        print("La bannière de la liberté est hissée au sommet de la Citadelle brisée.")
-        print("Des milliers d’écrans projettent ton nom : le libérateur de Velyra.\n")
-
-        print("Le Vigilant décolle lentement, traversant les nuages rosés…")
-        print("Un nouveau monde t’attend.\n")
-
-        print("🌌 Planète Velyra IX — LIBÉRÉE 🌌\n")
-        print("➡️ Utiliser la touche entrée pour voyager vers Aurelion Prime\n")
-
-    # =========================================================
-    #   TRANSITION VERS LE MONDE 3 — AURELION PRIME
-    # =========================================================
-    def transition_to_world_3(self):
-        """
-        Transition complète vers le CHAPITRE III — Aurelion Prime.
-        Déclenchée après la fin du monde 2.
-        """
-
-        if getattr(self.player, "world3_started", False):
+    def _handle_aurelion_node_choice(self):
+        """Gere le choix irreversible au Noeud."""
+        player = self.player
+        if player.ap_break_illusions or player.ap_keep_illusions:
             return
 
-        self.player.world3_started = True
-        self.player.log("Le Vigilant approche d’Aurelion Prime.")
+        print(L.AURELION_NODE_LINES)
+        for line in L.AURELION_NODE_OPTIONS:
+            print(line)
 
-        print("\n🚀 Le Vigilant approche d’une planète d’or et de lumière.")
-        print("Depuis l’espace, Aurelion Prime ressemble à un joyau taillé.")
-        print("Cités parfaites, océans turquoise, lignes géométriques irréprochables.\n")
+        choice = ""
+        while choice not in ("1", "2"):
+            choice = self.input_func("> ").strip()
 
-        print("L’atterrissage se déroule dans un calme étrange.")
-        print("Tout semble idyllique… trop idyllique.\n")
-
-        print("Les habitants sourient, mais leurs yeux sont froids.")
-
-        # Construction du monde
-        self._build_world_3()
-
-        # Placement du joueur
-        start_room = self.rooms_world3["District d’Or"]
-        self.player.current_room = start_room
-
-        print("🌌 CHAPITRE III — AURELION PRIME 🌌\n")
-        print(start_room.get_long_description())
-        print("\n" + self.help_text() + "\n")
-
-        print("Un drone de sécurité vous scanne brutalement.\n")
-        print("CHOIX IMMÉDIAT :\n")
-        print("1️⃣ S’infiltrer (DEF ↑, Réputation ↑, Moral ↓)")
-        print("2️⃣ Révéler la vérité (HP ↓, ATK ↑, Réputation ↓, Moral ↑)\n")
-
-
-        choix = ""
-        while choix not in ("1", "2"):
-            choix = input("> ").strip()
-
-        # INFILTRATION
-        if choix == "1":
-            self.player.ap_choice_infiltrate = True
-            self.player.defense += 1
-            self.player.reputation += 2
-            self.player.moral -= 1
-
-            print("\nVous adoptez des identités locales et pénétrez la haute société.")
-            print("➡️ DEF +1 | Réputation +2 | Moral -1\n")
-
-        # RÉVÉLATION
+        if choice == "1":
+            player.ap_break_illusions = True
+            self.adjust_stability(-1)
+            print(L.AURELION_NODE_BREAK)
         else:
-            self.player.ap_choice_reveal = True
-            dmg = self.player.take_damage(15)
-            self.player.atk += 1
-            self.player.reputation -= 2
-            self.player.moral += 1
+            player.ap_keep_illusions = True
+            self.adjust_stability(1)
+            print(L.AURELION_NODE_KEEP)
 
-            print("\nVous montrez la vérité devant une foule… qui éclate de rire.")
-            print(f"Les gardes interviennent : PV -{dmg}")
-            print("➡️ ATK +1 | Réputation -2 | Moral +1\n")
+    def _handle_seren_taal_confrontation(self):
+        """Gere la confrontation narrative avec Seren Taal dans la Salle du Trone."""
+        player = self.player
+        if player.ap_taal_alliance or player.ap_taal_dead:
+            return True
 
-        print("Explorez maintenant Aurelion Prime.")
-        print("Tapez t citoyen doré pour parler à un habitant.")
-        print("Utilisez 'g E' pour rejoindre le Quartier des Hologrammes.\n")
+        quest = None
+        if hasattr(self, "world3_quests"):
+            quest = self.world3_quests.get(6)
+        if not quest or quest.state != STATE_ACTIVE:
+            return False
 
+        if not player.ap_taal_confronted:
+            print(L.SEREN_CONFRONT_LINES)
+            for line in L.SEREN_CONFRONT_OPTIONS:
+                print(line)
+            choice = ""
+            while choice not in ("1", "2"):
+                choice = self.input_func("> ").strip()
 
-    # =========================================================
-    #   FIN DU MONDE 3 — Choix final après Seren Taal
-    # =========================================================
-    def end_world_3(self):
-        """
-        Fin du Chapitre III — choix moral final après le face-à-face
-        contre Seren Taal.
-        """
+            if choice == "1":
+                player.ap_taal_confronted = True
+                player.ap_taal_alliance = True
+                print(L.SEREN_ALLIANCE_TEXT)
+                if quest:
+                    quest.complete_objective(quest.objectives[0], player)
+                    quest.complete_objective(quest.objectives[1], player)
+                self.end_world3()
+                return True
 
-        print("\n🏛️ Vous entrez dans la Salle du Trône… Seren Taal vous attend.\n")
+            print(L.SEREN_REFUSE_TEXT)
+            player.ap_taal_confronted = True
 
-        # Si la fin sombre est déjà choisie
-        if getattr(self.player, "ap_taal_alliance", False):
-            print("Vous régnez désormais à ses côtés sur un empire parfait… et oppressif.")
-            print("FIN SOMBRE — TYRANNIE ABSOLUE.\n")
-            self.running = False
-            return
-
-        # Si Seren Taal vient d’être tuée (combat)
-        if getattr(self.player, "ap_taal_dead", False):
-            print("\n⚔️ Seren Taal tombe à genoux. Les illusions s’effondrent.")
-            print("Les habitants retrouvent leurs vraies émotions.")
-            print("Les rebelles des mondes 1 et 2 se rassemblent.\n")
-
-            ally = "Yara" if getattr(self.player, "yara_alive", True) else "Narek"
-            print(f"{ally} : « Tu as libéré trois mondes. Le Système Epsilon te doit tout. »\n")
-
-            print("🌅 FIN HEUREUSE — LA LIBERTÉ RENAÎT\n")
-            self.running = False
-            return
-
-        # Sinon : choix d’alliance AVANT le combat
-        print("Seren Taal te tend la main :")
-        print("« Rejoins-moi. Partage mon trône. Gouverne un empire parfait. »\n")
-
-        print("1️⃣ Accepter (Fin sombre immédiate)")
-        print("2️⃣ Refuser (lance le combat final)\n")
-
-        choix = ""
-        while choix not in ("1", "2"):
-            choix = input("> ").strip()
-
-        if choix == "1":
-            self.player.ap_taal_alliance = True
-            self.player.moral -= 5
-            self.player.reputation -= 5
-            print("\n🌑 Vous prenez sa main.")
-            print("Vous devenez les souverains d’un empire brillant… et totalitaire.")
-            print("FIN SOMBRE.\n")
-            self.running = False
-            return
-
-        print("\n🔥 Vous refusez. Seren Taal active son exo-armure.")
-        print("« Alors meurs comme les faibles. »")
-        print("➡️ Utilisez : a Seren Taal\n")
-
-    # =========================================================
-    #   HELP TEXT — Commandes disponibles
-    # =========================================================
-    def help_text(self):
-        """Retourne la liste des commandes disponibles pour affichage permanent."""
-        return (
-            "Commandes disponibles :\n"
-            "g : aller <direction> | retour | o : observer | p : prendre <objet> | j : jeter <objet> | i : inventaire | e : examiner <objet> |\n"
-            "t : parler <nom> | a : attaquer <ennemi> | u : utiliser <objet> | s : statut | h : historique | x : analyser <nom> | ia | q : quitter"
-        )
-
-    # =========================================================
-    #   MAIN LOOP — Boucle de jeu
-    # =========================================================
-
-    def play(self):
-        """
-        Lance la boucle principale du jeu :
-        - lit une commande utilisateur,
-        - la transmet à Command(),
-        - affiche le résultat,
-        - puis réaffiche l’aide.
-
-        La boucle continue tant que self.running == True.
-        """
-        while self.running:
-            try:
-                cmd_line = input("> ")
-            except EOFError:
+        room = player.current_room
+        seren = None
+        for candidate in room.enemies:
+            if candidate.name.lower() == "seren taal":
+                seren = candidate
                 break
+        if seren is None:
+            seren = Enemy("Seren Taal", hp=60, attack=25)
+            room.enemies.append(seren)
 
-            cmd = Command(cmd_line)
-            output = cmd.execute(self)
+        self.resolve_combat(player, seren)
+        return True
 
-            if output:
-                print(output)
-                
-                
-            # --- Attaque surprise Quartier civil (monde 2) ---
-            room = self.player.current_room
-            if (room.name == "Quartier civil" and not getattr(self.player, "velyra_surprise_done", False)):
-                self.player.velyra_surprise_done = True
-                self._attack_surprise_velyra()
+    def end_world3(self):
+        """Clot le monde 3 et lance la transition appropriee."""
+        player = self.player
+        if player.ap_taal_alliance:
+            print(L.SEREN_ALLIANCE_ENDING)
+            self.finished = True
+            return
+        if player.ap_taal_dead:
+            print(L.SEREN_VICTORY_ENDING)
+            self.transition_to_next_world()
+            return
+
+    def transition_to_world4(self):
+        """Transition narrative vers Nova Terra avec un choix initial."""
+        player = self.player
+        if player.world4_started:
+            return
+
+        player.world4_started = True
+
+        print(L.WORLD4_TRANSITION_INTRO)
+        print(L.WORLD4_TRANSITION_ORBITAL)
+        print(L.WORLD4_TRANSITION_CHOICE)
+        for line in L.WORLD4_TRANSITION_OPTIONS:
+            print(line)
+
+        choice = ""
+        while choice not in ("1", "2"):
+            choice = self.input_func("> ").strip()
+
+        if choice == "1":
+            print(L.WORLD4_CHOICE_PRUDENCE)
+            self.adjust_stability(1)
+            print("")
+        else:
+            dmg = min(10, player.hp)
+            player.hp = max(0, player.hp - dmg)
+            player.novaterra_explored_station = True
+            player.atk += 2
+            artifact = Item(
+                "Artefact alien",
+                "Un fragment ancien qui pulse d'une energie inconnue.",
+                1,
+            )
+            player.inventory.append(artifact)
+            player.weight += artifact.weight
+            print(L.WORLD4_STATION_DOCK)
+            print(L.WORLD4_STATION_FLOAT)
+            print(L.WORLD4_STATION_EXPLOSION.format(dmg=dmg))
+            print(L.WORLD4_STATION_ARTIFACT)
+            self.adjust_stability(2)
+
+        self.current_world = 4
+        self.world = World(world_id=4)
+        self.rooms = self.world.rooms
+        self.player.current_room = self.world.get_starting_room()
+        self.player.history = []
+        self._setup_world4_quests()
+        self.player.hp = self.player.max_hp
+
+        valley = self.player.current_room
+        companion = None
+        if player.saved_yara:
+            companion = Character(
+                "Yara",
+                "Yara, cheffe rebelle d'Eridani, marche a vos cotes. "
+                "Ses yeux brillent a la vue de cette nouvelle terre.",
+                valley,
+                [],
+                on_talk=novaterra_companion_reactive,
+            )
+        elif player.saved_narek:
+            companion = Character(
+                "Narek",
+                "Narek, survivant de Velyra et symbole de resistance, "
+                "observe l'horizon avec un melange d'espoir et de nostalgie.",
+                valley,
+                [],
+                on_talk=novaterra_companion_reactive,
+            )
+        else:
+            companion = Character(
+                "Le Guide",
+                "Une silhouette inconnue vous accompagne, calme et attentive.",
+                valley,
+                [],
+                on_talk=novaterra_companion_reactive,
+            )
+
+        if companion:
+            valley.characters.append(companion)
+            if companion.name.lower() == "le guide":
+                print(L.WORLD4_GUIDE_INTRO)
+
+        self.update_world4_quests()
+
+        print(L.WORLD4_CHAPTER_TITLE)
+        print(self.get_room_view())
+
+    def _handle_novaterra_final_choice(self):
+        """Declenche le choix final a l'Ancient Nexus."""
+        player = self.player
+        if player.novaterra_final_done:
+            return
+
+        quest = None
+        if hasattr(self, "world4_quests"):
+            quest = self.world4_quests.get(3)
+        if quest and quest.state == STATE_ACTIVE and not quest.is_completed:
+            quest.complete_objective(quest.objectives[-1], player)
+            if quest.is_completed and quest in self.player.quest_manager.active_quests:
+                self.player.quest_manager.active_quests.remove(quest)
+
+        print(L.NEXUS_CHOICE_LINES)
+        for line in L.NEXUS_OPTIONS:
+            print(line)
+
+        choice = ""
+        while choice not in ("1", "2", "3"):
+            choice = self.input_func("> ").strip()
+
+        if choice == "1":
+            player.novaterra_choice_harmony = True
+            self.adjust_stability(2)
+            self.end_world4()
+            return
+        if choice == "2":
+            player.novaterra_choice_domination = True
+            player.atk += 2
+            print(L.NEXUS_DOMINATION_COMBAT)
+            terra = Enemy("Terra Guardian", hp=70, attack=25)
+            player.current_room.enemies.append(terra)
+            self.resolve_combat(player, terra)
+            if terra in player.current_room.enemies:
+                player.current_room.enemies.remove(terra)
+            return
+
+        player.novaterra_choice_renounce = True
+        self.adjust_stability(3)
+        self.end_world4()
+
+    def end_world4(self):
+        """Clot le monde 4 et termine la partie."""
+        player = self.player
+        if player.novaterra_final_done:
+            return
+        player.novaterra_final_done = True
+
+        print(L.WORLD4_ENDING_TITLE)
+        if player.novaterra_choice_harmony:
+            for line in L.WORLD4_ENDING_HARMONY:
+                print(line)
+        elif player.novaterra_choice_domination:
+            for line in L.WORLD4_ENDING_DOMINATION:
+                print(line)
+        elif player.novaterra_choice_renounce:
+            for line in L.WORLD4_ENDING_RENOUNCE:
+                print(line)
+
+        for line in L.WORLD4_ENDING_FINAL:
+            print(line)
+        self.finished = True
+
+    def setup(self, player_name=None):
+        """Initialize world, player, commands, quests, and intro."""
+
+        # Setup commands
+        self.setup_commands()
+        # Setup world
+        self.setup_world()
+        # Setup player
+        self.setup_player(player_name=player_name)
+        # Setup quests
+        self._setup_quests()
+
+        # Print welcome message
+        self.print_welcome()
+        # Introduction and initial choice
+        self.intro()
 
 
-            # Si Vorn vient d'être tué : transition à la FIN du tour car sinon il manque "vorn fait tomber cristal..."
-            if getattr(self.player, "vorn_defeated", False):
-                self.player.vorn_defeated = False
-                self.transition_to_world_2()
+
+
+
+    # Play the game
+    def play(self):
+        """Run the main loop: read commands and process triggers."""
+        self.setup()
+
+        # Introduction + choix initial
+        self.choice_intro()
+        # Loop until the game is finished
+        while not self.finished:
+            # Get the command from the player
+            self.process_command(self.input_func("> "))
+
+            # Check win/lose conditions
+            if self.finished:
+                return None
+            if self.win():
+                print(L.GAME_WIN_TEXT)
+                self.finished = True
+            elif self.lose():
+                print(L.GAME_LOSE_TEXT)
+                self.finished = True
+            else:
+                # Deplacement des PNJ apres chaque tour
+                self.character_move()
+
+        return None
+
+    def character_move(self):
+        """Move wandering NPCs when applicable."""
+        for room in self.rooms.values():
+            for character in room.characters:
+                character.move()
+
+    def check_auto_combat(self):
+        """Declenche automatiquement un combat si un ennemi vivant est present."""
+        if self.finished:
+            return
+
+        room = self.player.current_room
+        if not room.enemies:
+            if self.current_world == 4 and room.name == ANCIENT_NEXUS:
+                self.update_world4_quests()
+                self._handle_novaterra_final_choice()
+            if self.current_world == 3 and room.name == SALLE_TRONE:
+                quest = None
+                if hasattr(self, "world3_quests"):
+                    quest = self.world3_quests.get(6)
+                if quest and quest.state == STATE_ACTIVE:
+                    self._handle_seren_taal_confrontation()
+            return
+
+        if self.current_world == 3 and room.name == SALLE_TRONE:
+            quest = None
+            if hasattr(self, "world3_quests"):
+                quest = self.world3_quests.get(6)
+            if not quest or quest.state != STATE_ACTIVE:
+                return
+            if self._handle_seren_taal_confrontation():
+                return
+
+        for enemy in list(room.enemies):
+            if not enemy.is_alive():
+                room.enemies.remove(enemy)
                 continue
-            
-            
-            # Si Karn vient d'être tué : transition à la FIN du tour car sinon il manque "karn s'effondre..."
-            if getattr(self.player, "velyra_karn_defeated", False):
-                self.player.velyra_karn_defeated = False
-                self.end_world_2()
-                continue
-            
-            
-            # Transition vers Monde 3 (après fin monde 2)
-            if getattr(self.player, "aurelion_ready", False):
-                self.player.aurelion_ready = False
-                self.transition_to_world_3()
-                continue
-            
-            # === Si les Gardiens Blancs viennent d'être tués ===
-            if room.name == "Palais de Lumière":
-                # Check if no White Guardians remain
-                remaining = any(e.name == "Gardien Blanc" and e.is_alive() for e in room.enemies)
-                if not remaining and not getattr(self.player, "ap_guardians_cleared", False):
-                    self.player.ap_guardians_cleared = True
-                    print("\n⚔️ Les deux Gardiens Blancs s'effondrent dans un fracas métallique.")
-                    print("Les portes en or massif vibrent… puis s’ouvrent lentement vers la Salle du Trône.")
-                    print("Une voix éthérée murmure : « Approche, élève… »\n")
+            if enemy.name.lower() == "capitaine vorn":
+                quest = self.player.quest_manager.get_quest_by_id(4)
+                if not quest or quest.state != STATE_ACTIVE:
+                    print(L.VORN_LOCKED_TEXT)
+                    continue
+            self.resolve_combat(self.player, enemy)
+            if self.finished:
+                return
 
+    def resolve_combat(self, player, enemy):
+        """Résout un combat automatique piloté par le quiz IA."""
+        print(L.COMBAT_START.format(enemy=enemy.name))
+        if not enemy.is_alive():
+            if enemy in player.current_room.enemies:
+                player.current_room.enemies.remove(enemy)
+            return False
 
-            # --- Attaque surprise Quartier des Hologrammes (monde 3) ---
-            if (room.name == "Quartier des Hologrammes"
-                and getattr(self.player, "world3_started", False)
-                and not getattr(self.player, "aurelion_surprise_done", False)):
-                
-                self.player.aurelion_surprise_done = True
-                self._attack_surprise_aurelion()
+        severe_injury_applied = False
 
-            # === Réactions post-Nœud (Monde 3) ===
-            if room.name in ("District d’Or", "Quartier des Hologrammes") and getattr(self.player, "ap_cleared_node", False):
+        while enemy.is_alive() and player.hp > 0:
+            try:
+                question, expected = ai_quiz.get_question()
+                print(L.COMBAT_AI_QUESTION.format(question=question))
+            except Exception:  # pylint: disable=broad-exception-caught
+                print(L.COMBAT_AI_FALLBACK_NOTICE)
+                question = L.COMBAT_AI_FALLBACK_QUESTION
+                expected = L.COMBAT_AI_FALLBACK_ANSWER
+                print(L.COMBAT_AI_QUESTION.format(question=question))
+            answer = self.input_func("> ")
+            debug_kill = answer.strip().lower() == "b"
+            try:
+                player_attacks = debug_kill or ai_quiz.evaluate_answer(None, answer, expected)
+            except Exception:  # pylint: disable=broad-exception-caught
+                print(L.COMBAT_AI_EVAL_ERROR)
+                player_attacks = False
 
-                if self.player.ap_break_illusions:
-                    print("\n🌪️ Les illusions sont brisées :")
-                    if room.name == "District d’Or":
-                        print("Les habitants paniquent, certains pleurent en découvrant la vérité.")
-                    else:
-                        print("Les hologrammes scintillent, instables… certains s’effondrent comme du verre.")
+            if player_attacks:
+                damage = enemy.hp if debug_kill else player.atk
+                dealt = enemy.take_damage(damage)
+                print(L.COMBAT_PLAYER_ATTACK.format(enemy=enemy.name, damage=dealt))
+                print(L.COMBAT_PLAYER_HP.format(hp=player.hp, max_hp=player.max_hp))
+                if enemy.is_alive():
+                    print(L.COMBAT_ENEMY_HP.format(enemy=enemy.name, hp=enemy.hp))
                 else:
-                    print("\n✨ Les illusions continuent d’opérer. Tout semble parfait… trop parfait.")
+                    print(L.COMBAT_ENEMY_DEFEATED.format(enemy=enemy.name))
+                    enemy_name = enemy.name.lower()
+                    if "patrouill" in enemy_name:
+                        player.patrollers_defeated = True
+                    if enemy_name == "spectre holographique":
+                        player.attack_holo_done = True
+                    if "vorn" in enemy_name:
+                        player.vorn_defeated = True
+                        self.adjust_stability(2)
+                    if enemy_name == "gouverneur karn":
+                        player.karn_defeated = True
+                        self._handle_karn_aftermath()
+                    if enemy_name == "seren taal":
+                        player.ap_taal_confronted = True
+                        player.ap_taal_dead = True
+                        print(L.COMBAT_SEREN_DEFEATED)
+                        quest = None
+                        if hasattr(self, "world3_quests"):
+                            quest = self.world3_quests.get(6)
+                        if quest:
+                            quest.complete_objective("Confronter Seren Taal", player)
+                            quest.complete_objective("Decider du sort de Seren Taal", player)
+                        self.end_world3()
+                    if enemy_name == "terra guardian":
+                        player.novaterra_terra_defeated = True
+                        print(L.COMBAT_TERRA_DEFEATED)
+                        self.end_world4()
+                    if enemy in player.current_room.enemies:
+                        player.current_room.enemies.remove(enemy)
+                    self.update_world1_quests()
+                    if self.current_world == 3:
+                        self.update_world3_quests()
+                    return True
+            else:
+                dmg = max(0, int(enemy.attack))
+                player.hp = max(0, player.hp - dmg)
+                print(L.COMBAT_ENEMY_ATTACK.format(enemy=enemy.name, damage=dmg))
+                print(L.COMBAT_PLAYER_HP.format(hp=player.hp, max_hp=player.max_hp))
+                if dmg > 0 and not severe_injury_applied and player.hp <= (player.max_hp // 2):
+                    severe_injury_applied = True
+                    self.adjust_stability(-1)
+                    if self.finished:
+                        return False
+                if player.hp <= 0:
+                    print(L.COMBAT_PLAYER_DEAD)
+                    self.finished = True
+                    return False
 
-            # === Déclencheur automatique du monologue de Seren Taal ===
-            if room.name == "Salle du Trône" and not getattr(self.player, "ap_taal_confronted", False):
+        return True
 
-                self.player.ap_taal_confronted = True
-                print("\n👑 Seren Taal se lève de son trône, un sourire calme au visage.\n")
-                print("« Te voilà enfin… Capitaine. »\n")
-                print("« J’ai bâti un monde parfait. Sans douleur. Sans guerre. »")
-                print("« Rejoins-moi. Gouvernons ensemble. »\n")
-
-                print("1️⃣ Accepter l’alliance (fin sombre)")
-                print("2️⃣ Refuser (déclenche le combat final)\n")
-
-                choix = ""
-                while choix not in ("1", "2"):
-                    choix = input("> ").strip()
-
-                if choix == "1":
-                    self.player.ap_taal_alliance = True
-                    self.player.moral -= 5
-                    self.player.reputation -= 5
-                    self.player.atk += 2
-                    self.player.defense += 1
-
-                    print("\n🌑 Vous prenez sa main. Vous devenez co-dirigeant d’un empire parfait… et oppressif.")
-                    print("FIN SOMBRE.\n")
-                    self.running = False
-                    return
-
-                # Refus → combat
-                print("\n🔥 Vous refusez.")
-                print("Seren Taal active son exo-armure : « Alors tu mourras comme les autres. »\n")
-                print("➡️ Utilisez : a Seren Taal\n")
-
-            
-            # Si Seren Taal vient d'être tuée, lancer fin du monde 3
-            if getattr(self.player, "ap_taal_dead", False):
-                self.player.ap_taal_dead = False
-                self.end_world_3()
-                continue
+    # Process the command entered by the player
+    def process_command(self, command_string) -> None:
+        """Parse and execute a command string."""
 
 
+        # Ignorer les commandes vides
+        if command_string.strip() == "":
+            return
 
-            # Affiche toujours les commandes après chaque action
-            print("\n" + self.help_text() + "\n")
+
+        # Split the command string into a list of words
+        list_of_words = command_string.split(" ")
+        command_word = list_of_words[0]
 
 
-# Point d’entrée du programme
+        # If the command is not recognized, print an error message
+        if command_word not in self.commands:
+            print(L.UNKNOWN_COMMAND_TEXT.format(command=command_word))
+        # If the command is recognized, execute it
+        else:
+            command = self.commands[command_word]
+            try:
+                command.action(self, list_of_words, command.number_of_parameters)
+            except Exception:  # pylint: disable=broad-exception-caught
+                print(L.COMMAND_EXEC_ERROR)
+                return
+            self.check_auto_combat()
+            if self.current_world == 2:
+                self.update_world2_quests()
+            if self.current_world == 3:
+                self.update_world3_quests()
+            if self.current_world == 4:
+                self.update_world4_quests()
+
+
+    # Print the welcome message
+    def print_welcome(self):
+        """Print the welcome banner."""
+        for line in L.WELCOME_LINES:
+            print(line.format(name=self.player.name))
+        #
+
+    # Check if the player has won
+    def win(self):
+        """Return True when the win condition is met."""
+        if self.current_world == 1:
+            return False
+        for quest in self.player.quest_manager.get_all_quests():
+            if not quest.is_completed:
+                return False
+
+        print(L.PRISON_RELEASE_TEXT)
+        return True
+
+    def lose(self):
+        """Return True when the lose condition is met."""
+        if self.player.current_room.name == PRISON:
+            if not any(
+                item.name == L.ITEM_DEFINITIONS["keycard"]["name"]
+                for item in self.player.inventory
+            ):
+                for line in L.PRISON_TURRET_ALERT_LINES:
+                    print(line)
+                return True
+        return False
+
 if __name__ == "__main__":
-    g = Game()
-    g.play()
+    game = Game()
+    game.play()
