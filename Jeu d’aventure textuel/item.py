@@ -1,66 +1,67 @@
-"""
-item.py — Définition de la classe Item.
+"""Item model and helpers."""
 
-Un Item représente un objet manipulable dans le jeu :
-- il peut être ramassé, jeté, examiné,
-- parfois utilisé pour produire un effet (soin, défense, quête…),
-- il possède un poids influençant la capacité de transport du joueur.
-
-Ce module est volontairement minimaliste : il agit comme un conteneur de données
-que les actions (dans actions.py) interprètent.
-"""
+import labels as L
 
 
-class Item:
+class Item:  # pylint: disable=too-many-instance-attributes,too-few-public-methods
     """
-    Représente un objet du jeu.
-
-    Attributs :
-        name (str) :
-            Nom de l'objet tel qu'il apparaît dans l'inventaire et dans les rooms.
-
-        description (str) :
-            Texte descriptif présenté lors de l'examen.
-
-        effect_type (str) :
-            Type d'effet appliqué lors de l'utilisation.
-            Valeurs possibles (convention de jeu) :
-                - "heal"  : rend des PV
-                - "def"   : augmente la défense
-                - "atk"   : augmente l'attaque
-                - "quest" : objet clé de scénario, non utilisable
-                - "misc"  : objet générique sans effet (par défaut)
-
-        value (int) :
-            Intensité de l'effet (ex : +25 PV, +2 DEF…).
-
-        usable (bool) :
-            Indique si l'objet peut être utilisé avec la commande "utiliser".
-
-        weight (int) :
-            Poids en kilogrammes, pour gérer la capacité de transport du joueur.
-
-    Aucun comportement n'est codé ici : l'objet est une simple "fiche"
-    que d'autres modules manipulent.
+    Représente un item manipulable par le joueur.
+    Attributes:
+        name (str): Le nom de l'item.
+        description (str): La description de l'item.
+        weight (float): Le poids de l'item en kilogrammes.
+        effect_type (str | None): Le type d'effet (ex: "heal", "atk", "def").
+        effect_value (int): La valeur de l'effet.
+        usable (bool): True si l'item peut être utilisé.
     """
 
     def __init__(
         self,
-        name: str,
-        description: str,
-        effect_type: str = "misc",
-        value: int = 0,
-        usable: bool = False,
-        weight: int = 1,
-    ):
-        """Initialise un objet avec ses propriétés principales."""
+        name,
+        description,
+        weight,
+        effect_type=None,
+        effect_value=0,
+        usable=False,
+        on_pickup=None,
+    ):  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self.name = name
         self.description = description
-        self.effect_type = effect_type  # ex. "heal", "def", "quest"
-        self.value = value
-        self.usable = usable
         self.weight = weight
+        self.effect_type = effect_type
+        self.effect_value = effect_value
+        self.usable = usable
+        self.on_pickup = on_pickup
+        self.pickup_seen = False
 
     def __str__(self):
-        """Affichage lisible de l'objet (inventaire, sol, débug…)."""
-        return f"{self.name}: {self.description} ({self.weight} kg)"
+        return L.ITEM_STR_TEMPLATE.format(
+            name=self.name,
+            description=self.description,
+            weight=self.weight,
+        )
+
+
+def create_stability_note():
+    """
+    Create the narrative note that hints at mental collapse without numbers.
+    The message is returned only once, on first pickup.
+    """
+    text = L.STABILITY_NOTE_TEXT
+    note = Item(
+        L.STABILITY_NOTE_NAME,
+        L.STABILITY_NOTE_DESC,
+        0,
+        usable=False,
+    )
+    note.pickup_seen = False
+
+    def on_pickup(player, _game):
+        if note.pickup_seen:
+            return None
+        note.pickup_seen = True
+        player.read_stability_note = True
+        return "\n" + text + "\n"
+
+    note.on_pickup = on_pickup
+    return note
