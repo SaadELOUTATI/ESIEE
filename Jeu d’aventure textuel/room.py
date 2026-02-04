@@ -1,207 +1,154 @@
-"""
-room.py — Définition des salles du jeu.
+"""Room model with exits, items, and characters."""
 
-Une Room représente un lieu exploré par le joueur :
-- elle possède un nom et une description narrative,
-- des sorties (N/S/E/O/H/B) vers d’autres salles,
-- des objets au sol,
-- des personnages (PNJ),
-- des ennemis potentiels.
-
-Ce module sert de base à la structure de la carte du monde.
-"""
+import labels as L
 
 
 class Room:
-    """Représente une salle ou un lieu de l'univers du jeu."""
+    """
+    Représente une pièce du jeu d’aventure.
 
-    def __init__(self, name, description):
-        """
-        Initialise une salle.
+    Une Room correspond à un lieu dans lequel le joueur peut se trouver.
+    Elle possède un nom, une description et un ensemble de sorties menant
+    vers d’autres pièces.
 
-        Paramètres :
-            name (str)         — nom du lieu
-            description (str)  — texte narratif affiché au joueur
-        """
+    Attributs
+    ----------
+    name : str
+        Nom de la pièce.
+    description : str
+        Description textuelle de la pièce.
+    exits : dict
+        Dictionnaire associant une direction (str) à une autre Room ou à None.
+
+    Méthodes
+    --------
+    get_exit(direction)
+        Retourne la pièce associée à la direction donnée.
+    get_exit_string()
+        Retourne une chaîne décrivant les sorties disponibles.
+    get_long_description()
+        Retourne une description complète de la pièce incluant les sorties.
+
+    Exemples
+    --------
+    >>> room = Room("Cuisine", "dans une cuisine sombre")
+    >>> room.exits["nord"] = None
+    >>> room.get_exit("nord") is None
+    True
+    >>> "Sorties" in room.get_exit_string()
+    True
+    """
+
+
+    def __init__(self, name, description, image=None):
+        """Create a room with a name, description, and empty containers."""
         self.name = name
         self.description = description
-
-        # Exits : dictionnaire direction → Room
+        self.image = image
+        self.perception_descriptions = {}
         self.exits = {}
-
-        # Contenu du lieu
-        self.items = []
+        self.inventory = []
         self.characters = []
         self.enemies = []
-        
-        # Descriptions dynamique alternatives
-        self.alt_description_robbery = ""
-        self.alt_description_corruption = ""
-        self.game = None  # Référence vers l'objet Game global
 
-    # ============================================================
-    # Connexions entre salles
-    # ============================================================
 
-    def connect(self, other_room, direction):
-        """
-        Connecte deux salles de manière bidirectionnelle.
 
-        direction : 'N', 'E', 'S', 'O', 'H', 'B'
+    def look(self, stability_value=None):
+        """Return the full room description with items, enemies, and characters."""
+        res = self.get_long_description(stability_value)
+        res += "\n" + self.format_items() + "\n"
+        res += "\n" + self.get_enemies() + "\n"
+        res += "\n" + self.format_characters() + "\n"
+        return res
 
-        Exemple : salleA.connect(salleB, "E")
-        créera automatiquement la connexion salleB → salleA vers "O".
-        """
-        self.exits[direction.upper()] = other_room
 
-        reverse = {
-            "N": "S",
-            "S": "N",
-            "E": "O",
-            "O": "E",
-            "H": "B",
-            "B": "H",
-        }
+    def get_characters(self):
+        """Return a copy of the characters list."""
+        return list(self.characters)
 
-        if direction.upper() in reverse:
-            other_room.exits[reverse[direction.upper()]] = self
+    def get_items(self):
+        """Return a copy of the room inventory."""
+        return list(self.inventory)
+
+    def format_characters(self):
+        """Format the character list for display."""
+        characters = self.get_characters()
+        if not characters:
+            return L.ROOM_NO_CHARACTERS
+
+        res = f"{L.ROOM_CHARACTERS_HEADER}\n"
+        for index, character in enumerate(characters, start=1):
+            res += f"    {index}) {character}\n"
+        return res.rstrip()
+
+    def get_enemies(self):
+        """Format the enemy list for display."""
+        if not self.enemies:
+            return L.ROOM_NO_ENEMIES
+
+        res = f"{L.ROOM_ENEMIES_HEADER}\n"
+        for enemy in self.enemies:
+            res += f"    - {enemy}\n"
+        return res
+
+
+    def get_inventory(self):
+        """Return the formatted inventory string."""
+        return self.format_items()
+
+    def format_items(self):
+        """Format the room items for display."""
+        items = self.get_items()
+        if not items:
+            return L.ROOM_NO_ITEMS
+
+        res = f"{L.ROOM_ITEMS_HEADER}\n"
+        for index, item in enumerate(items, start=1):
+            res += f"    {index}) {item}\n"
+        return res.rstrip()
 
     def get_exit(self, direction):
-        """Retourne la salle associée à une direction donnée, ou None."""
-        direction = direction.upper()
-        return self.exits.get(direction, None)
+        """Return the room in the given direction, or None."""
 
-    # ============================================================
-    # Gestion des objets
-    # ============================================================
-
-    def add_item(self, item):
-        """Dépose un objet dans la salle."""
-        self.items.append(item)
-
-    def remove_item(self, item):
-        """Retire un objet présent dans la salle."""
-        if item in self.items:
-            self.items.remove(item)
-
-    def find_item(self, name):
-        """Recherche un objet par nom, insensible à la casse."""
-        name = name.lower()
-        for it in self.items:
-            if it.name.lower() == name:
-                return it
+        # Return the room in the given direction if it exists.
+        if direction in self.exits:
+            return self.exits[direction]
         return None
 
-    # ============================================================
-    # PNJ (personnages non-joueurs)
-    # ============================================================
-
-    def add_character(self, character):
-        """Ajoute un PNJ à la salle."""
-        self.characters.append(character)
-
-    def find_character(self, name):
-        """Recherche un PNJ par son nom."""
-        name = name.lower()
-        for c in self.characters:
-            if c.name.lower() == name:
-                return c
-        return None
-
-    # ============================================================
-    # Ennemis
-    # ============================================================
-
-    def add_enemy(self, enemy):
-        """Ajoute un ennemi à la salle."""
-        self.enemies.append(enemy)
-
-    def find_enemy(self, name):
-        """
-        Recherche un ennemi vivant dans la salle.
-        Retourne None si l’ennemi n'existe pas ou est déjà vaincu.
-        """
-        name = name.lower()
-        for e in self.enemies:
-            if e.name.lower() == name and e.is_alive():
-                return e
-        return None
-
-    # ============================================================
-    # Description longue
-    # ============================================================
-
+    # Return a string describing the room's exits.
     def get_exit_string(self):
-        """Retourne toutes les sorties avec le nom des salles reliées."""
-        if not self.exits:
-            return "Aucune sortie."
-
-        dir_fr = {
-            "N": "N",
-            "S": "S",
-            "E": "E",
-            "O": "O",
-            "H": "H",
-            "B": "B",
-        }
-
-        lines = ["Sorties :"]
+        """Return a human-readable string of available exits."""
+        exit_string = L.ROOM_EXITS_PREFIX
+        parts = []
         for direction, room in self.exits.items():
-            d = dir_fr.get(direction, direction)
-            lines.append(f"  {d} → {room.name}")
+            if room is not None:
+                parts.append(f"{direction} : {room.name}")
+        exit_string += ", ".join(parts)
+        return exit_string
 
-        return "\n".join(lines)
+    def get_description(self, stability_value=None):
+        """Return the base or perception-altered description."""
+        if not self.perception_descriptions or stability_value is None:
+            return self.description
 
-    def get_long_description(self):
-        """
-        Retourne une description détaillée :
-        - texte narratif,
-        - PNJ,
-        - ennemis vivants,
-        - objets,
-        - sorties.
-        """
-        desc = f"== {self.name} ==\n{self.description}\n"
-        
-        # Descriptions alternatives pour les entrepôts civils
-        p = self.game.player
-        if self.name == "Entrepôts civils":
-            if getattr(p, "velyra_robbed_civilians", False):
-                desc =  f"== {self.name} ==\n{self.alt_description_robbery}\n"
-            elif getattr(p, "velyra_corrupted_general", False):
-                desc =  f"== {self.name} ==\n{self.alt_description_corruption}\n"
+        try:
+            value = int(stability_value)
+        except (TypeError, ValueError):
+            return self.description
 
-        # Description alternative pour la prison centrale
-        if self.name == "Prison centrale":      
-            if getattr(p, "velyra_missiles_obtained", False):
-                desc = f"== {self.name} ==\n{self.alt_description_after_missiles}\n"
-            elif getattr(p, "velyra_prison_liberated", False):
-                desc = f"== {self.name} ==\n{self.alt_description_after_raid}\n"
-                
-        # description alternative pour le district d'Or
-        if self.name == "District d’Or":
-            if getattr(self.game.player, "ap_choice_infiltrate", False):
-                desc = f"== {self.name} ==\n{self.alt_description_infiltrate}\n"
-            elif getattr(self.game.player, "ap_choice_reveal", False):
-                desc = f"== {self.name} ==\n{self.alt_description_reveal}\n"
+        if value <= 4 and "low" in self.perception_descriptions:
+            return self.perception_descriptions["low"]
+        if value >= 8 and "high" in self.perception_descriptions:
+            return self.perception_descriptions["high"]
+        return self.description
 
-        # description alternative pour le Nœud
-        if self.name == "Le Nœud":
-            if getattr(self.game.player, "ap_break_illusions", False):
-                desc = f"== {self.name} ==\n{self.alt_description_break}\n"
-            elif getattr(self.game.player, "ap_keep_illusions", False):
-                desc = f"== {self.name} ==\n{self.alt_description_keep}\n"
-
-
-            
-        if self.characters:
-            desc += "Personnes présentes : " + ", ".join(c.name for c in self.characters) + "\n"
-
-        if self.enemies:
-            desc += "Ennemis : " + ", ".join(e.name for e in self.enemies if e.is_alive()) + "\n"
-
-        if self.items:
-            desc += "Objets : " + ", ".join(i.name for i in self.items) + "\n"
-
-        desc += self.get_exit_string()
-        return desc
+    # Return a long description of this room including exits.
+    def get_long_description(self, stability_value=None):
+        """Return the long description string including exits."""
+        description_text = self.get_description(stability_value)
+        body = L.ROOM_DESCRIPTION_PREFIX.format(description=description_text)
+        return L.ROOM_LONG_DESCRIPTION_TEMPLATE.format(
+            name=self.name,
+            body=body,
+            exits=self.get_exit_string(),
+        )
