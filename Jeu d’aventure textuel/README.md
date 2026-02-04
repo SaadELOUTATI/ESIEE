@@ -1,59 +1,149 @@
-🌌 Projet : La Révolte du Vigilant
-Jeu d’aventure textuel – Python
-📖 Présentation générale
+# Vigilant — Text‑Based Adventure
 
-Ce projet consiste à développer un jeu d’aventure textuel complet en Python, basé sur un système de commandes, exploration, choix moraux, combats, gestion des ressources et progression narrative.
-Le joueur incarne un membre du vaisseau Vigilant, chargé de trouver une nouvelle planète habitable après la destruction de la Terre. Chaque décision influence le moral, les ressources, la réputation, les alliés et la suite de l’histoire.
-Toutes les mécaniques, choix et arcs narratifs proviennent du document fourni (Projet INFO.pdf).
+## Guide utilisateur
 
-🗺️ Résumé des scénarios
-🌑 Planète A — Eridani Prime
+### Prérequis
+- Python 3.10+ (aucune dépendance externe requise)
 
-Le Vigilant s’écrase sur une planète minière dominée par le tyran Vorn.
-Le joueur doit gérer un grand dilemme initial (sauver l'équipage ou les ressources), négocier avec un marchand douteux ou rejoindre des rebelles menés par Yara, puis traverser trois villes avant d’affronter Vorn dans la forteresse.
-Les choix déterminent les alliés, les ressources disponibles et l’état moral du groupe.
+### Installation
+1) Téléchargez le projet.
+2) Placez‑vous dans le dossier du jeu.
 
-🤖 Planète B — Velyra IX
+### Lancer le jeu
+- **Mode console** :
+  ```bash
+  python game.py
+  ```
+- **Mode graphique (Tkinter)** :
+  ```bash
+  python gui.py
+  ```
+  Note : dans un environnement headless (ex. Codespaces), l'interface graphique ne peut pas s'ouvrir.
+  Utilisez alors `python gui.py --cli` pour rester en mode console.
+  Le mode graphique affiche l’image de la salle et une console intégrée.
 
-Monde cybernétique contrôlé par Karn, ses IA et ses drones.
-Le joueur choisit entre étudier la planète ou attaquer immédiatement, puis doit décider de voler les civils ou corrompre un général pour obtenir armes et accès militaires.
-Libérer Narek, frère de Yara, mène à un dilemme final : sauver Yara ou Narek avec une seule dose de nanomédecine.
+### Univers & progression
+Le jeu est découpé en **4 mondes** successifs :
+1) **Eridani Prime** — survie et premier contact.
+2) **Velyra IX** — oppression mécanique et choix lourds.
+3) **Aurelion Prime** — illusions, vérité et pouvoir.
+4) **Nova Terra** — aboutissement et choix final.
 
-✨ Planète C — Aurelion Prime
+Chaque monde possède ses salles, ses PNJ, ses objets et ses quêtes dédiées.
 
-Un paradis doré… fondé sur l’exploitation totale des autres mondes.
-Le chef suprême est Seren Taal, ancienne capitaine du Vigilant, devenue dirigeante autoritaire.
-Le joueur doit s’infiltrer dans cette société parfaite ou se révéler ouvertement, puis traverser le Nœud (centre de contrôle cérébral), avant de choisir entre accepter une alliance immorale ou affronter Seren Taal dans le combat le plus difficile du jeu.
+### Conditions de victoire / défaite
+- **Victoire** : le jeu se termine lorsque toutes les quêtes du monde final sont accomplies.
+- **Défaite** :
+  - PV à 0 en combat,
+  - ou effondrement mental (stabilité trop basse),
+  - ou capture dans certaines zones (ex. prison sans carte d’accès).
 
-🌍 Planète D — Nova Terra
+### Système de quêtes
+- Quêtes **numérotées** et suivies dans un journal.
+- États possibles : **Verrouillée**, **Disponible**, **Active**, **Terminée**.
+- Certaines quêtes s’activent automatiquement, d’autres via `activate <id>`.
 
-La destination finale : une planète immense, fertile et habitable.
-Le joueur peut ignorer ou explorer une station orbitale ancienne avant d’atterrir. Les peuples libérés des trois mondes prononcent leurs serments d’unité.
-Dernier choix : devenir dirigeant suprême ou laisser un Conseil interplanétaire gouverner librement.
-C’est la renaissance de l’humanité.
+### Commandes principales
+> Les commandes sont en français, et certaines utilisent des index issus de `look` ou `check`.
 
-🧩 Structure du projet
-my_TBA_project
-|
-|-- README.md                                   # ce fichier
-|-- actions.py                                  # classe Actions : interactions et actions possibles
-|-- character.py                                # classe Character : gestion des PNJ
-|-- command.py                                  # classe Command : format et exécution d'une commande
-|-- config.py                                   # configuration du jeu, ressources, paramètres, planètes
-|-- game.py                                     # classe Game : moteur principal du jeu
-|-- item.py                                     # classe Item : gestion des objets
-|-- player.py                                   # classe Player : stats, inventaire, ressources, moral
-|-- room.py                                     # classe Room : lieux, transitions, événements
-|-- test.py                                     # tests automatisés (logique, combat, commandes)
-|-- video.mp4                                   # vidéo de démonstration
-|-- win.py                                      # conditions de victoire, défaite, fins possibles
+- `help` : aide générale.
+- `look` : description complète de la salle + PNJ/objets numérotés.
+- `go <direction>` : se déplacer (N/E/S/O/U/D). Variantes acceptées (nord, sud…).
+- `back` : revenir à la salle précédente.
+- `talk <num>` : parler à un PNJ (index de `look`).
+- `take <num>` : ramasser un objet (index de `look`).
+- `drop <num>` : déposer un objet (index de `check`).
+- `use <num>` : utiliser un objet (index de `check`).
+- `attack <ennemi>` : attaquer un ennemi par nom.
+- `check` : inventaire du joueur (numéroté).
+- `status` : état global (PV, attaque, état mental, quêtes du monde courant).
+- `map` : carte ASCII du monde courant.
+- `quests` : liste des quêtes et statuts.
+- `quest <id>` : détail d’une quête.
+- `activate <id>` : activation manuelle.
+- `rewards` : récompenses obtenues.
+- `history` : historique des salles visitées.
+- `quit` : quitter.
 
-🚀 Fonctionnalités attendues
+### Combat
+- Combat **automatique** lorsqu’un ennemi est présent.
+- Résolution via un mini‑quiz (`ai_quiz.py`).
+- L’attaque dépend des bonnes réponses, puis dégâts appliqués.
 
-– Système de commandes textuelles
-– Gestion du joueur : moral, attaque, défense, réputation
-– PNJ avec comportements et dialogues
-– Objets, inventaire, utilisation d’items
-– Combats avec conséquences
-– Enchaînement des planètes et choix narratifs
-– Conditions de victoire et fins alternatives
+### Images des salles (GUI)
+- Les images se trouvent dans `assets/`.
+- Les noms de fichiers sont définis dans `world.py` (`ROOM_IMAGES`).
+- Format recommandé : **PNG 1000×460** (ratio ~2.17:1).
+
+---
+
+## Guide développeur
+
+### Architecture (modules)
+- `game.py` : orchestration globale, combats, progression, conditions de fin.
+- `world.py` : construction des mondes, salles, PNJ, items.
+- `room.py` : modèle de salle (exits, items, PNJ, ennemis).
+- `player.py` : état du joueur, inventaire, stabilité, quêtes.
+- `actions.py` : commandes utilisateur (handlers).
+- `command.py` : parsing et validation des commandes.
+- `quest.py` : `Quest` + `QuestManager`.
+- `character.py` : PNJ, dialogues réactifs, callbacks.
+- `item.py` : objets et effets.
+- `enemy.py` : modèle ennemi.
+- `ai_quiz.py` : moteur de questions/réponses.
+- `gui.py` : interface Tkinter (image + console + boutons).
+
+### Diagramme de classes (Mermaid)
+
+```mermaid
+classDiagram
+    Game --> World : construit
+    Game --> Player : pilote
+    Game --> Command : exécute
+    Command --> Actions : délègue
+    World --> Room : contient
+    Room --> Item : inventaire
+    Room --> Character : PNJ
+    Room --> Enemy : ennemis
+    Player --> QuestManager : possède
+    QuestManager --> Quest : gère
+
+    class Game {
+      +setup()
+      +process_command()
+      +check_auto_combat()
+    }
+    class World {
+      +rooms
+      +get_starting_room()
+    }
+    class Room {
+      +name
+      +description
+      +exits
+    }
+    class Player {
+      +hp
+      +atk
+      +stability
+    }
+    class QuestManager {
+      +check_room_objectives()
+      +check_action_objectives()
+    }
+    class Quest {
+      +title
+      +state
+    }
+```
+
+---
+
+## Perspectives de développement
+
+- **Sauvegarde/chargement** (sérialisation de l’état du monde).
+- **Localisation** (fichiers de labels par langue).
+- **Équilibrage** du quiz IA (pool de questions + difficulté progressive).
+- **Amélioration UI** : animations légères, meilleure gestion responsive.
+- **Nouvelles images** et cohérence visuelle par monde.
+- **Journal narratif** complet (décisions, ennemis vaincus, événements clés).
