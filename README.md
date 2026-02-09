@@ -1,4 +1,4 @@
-📚 **ESIEE – Mes projets informatiques**
+📚 **ESIEE – Mes projets professionnels**
 
 Bienvenue sur mon repository ESIEE !  
 Ce dépôt a pour objectif de regrouper l’ensemble de mes projets informatiques réalisés au cours de mon parcours académique et personnel.  
