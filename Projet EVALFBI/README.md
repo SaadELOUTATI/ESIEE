@@ -1,92 +1,104 @@
-Projet EvalFBI (Evalbot – TI LM3S9B92) 🚓🤖
-Présentation générale
+# Projet EvalFBI – Evalbot TI LM3S9B92 🚓🤖
 
-EvalFBI est un projet développé sur le robot Evalbot TI LM3S9B92, programmé entièrement en assembleur ARM, dont l’objectif est de reproduire le comportement d’une voiture de police autonome. 🚨
+## Présentation générale
 
-Le robot exécute une patrouille, réagit aux obstacles, et dispose d’un mode d’urgence imitant les gyrophares d’un véhicule prioritaire.
-Ce projet a été réalisé dans le cadre du module IGI-3001.
+**EvalFBI** est un projet embarqué développé sur le robot **Evalbot TI LM3S9B92**, programmé entièrement en **assembleur ARM (Cortex-M3)**.  
+L’objectif est de reproduire le comportement d’une **voiture de police autonome**, capable de patrouiller, détecter des obstacles et signaler un mode d’urgence.
 
-Fonctionnalités principales
-1. Mode patrouille normale 🚔
+Ce projet a été réalisé dans le cadre du module **IGI-3001**.
 
-Après un appui sur Switch 1, le robot se met en marche avant et effectue une ronde continue.
-Pendant la patrouille :
-• Surveillance constante des deux bumpers.
-• En cas d’obstacle, le robot :
-– s’arrête ⛔
-– recule ↩️
-– active un clignotant lent (gauche ou droite) 🔁
-– contourne l’obstacle
-– reprend la marche avant ▶️
+Le robot exécute une patrouille autonome, réagit aux collisions via des bumpers et dispose d’un mode urgence simulant des gyrophares.
 
-2. Mode urgence 🚨
+---
 
-Activé/désactivé par Switch 2.
-• Les deux LEDs clignotent rapidement pour simuler les gyrophares d’un véhicule d’intervention.
-• Le robot continue sa patrouille mais signale son passage en mode prioritaire.
+## Fonctionnalités principales
 
-Scénarios de fonctionnement
-Scénario 1 – Démarrage 🔋
+### 1. Mode patrouille normale 🚔
 
-• LEDs éteintes, robot immobile.
-• Pression Switch 1 → marche avant.
+- Activation par **Switch 1**
+- Le robot avance en continu et effectue une ronde autonome
+- Surveillance permanente des **bumpers gauche et droit**
 
-Scénario 2 – Mode urgence 🚨⚡
+En cas d’obstacle :
+- arrêt immédiat
+- marche arrière
+- activation d’un clignotant lent (gauche ou droit)
+- manœuvre d’évitement
+- reprise automatique de la marche avant
 
-• Pression Switch 2 → LEDs clignotement rapide.
-• Pression à nouveau → LEDs éteintes.
+---
 
-Scénario 3 – Obstacle côté gauche ⬅️
+### 2. Mode urgence 🚨
 
-• arrêt → recul → clignotant gauche (lent) → rotation à droite → marche avant.
+- Activation / désactivation par **Switch 2**
+- Les deux LEDs clignotent rapidement pour simuler des gyrophares
+- Le robot continue sa patrouille tout en signalant son état prioritaire
 
-Scénario 4 – Obstacle côté droit ➡️
+---
 
-• arrêt → recul → clignotant droit (lent) → rotation à gauche → marche avant.
+## Scénarios de fonctionnement
 
-Scénario 5 – Reprise normale 🔄
+### Scénario 1 – Démarrage 🔋
+- Robot immobile, LEDs éteintes
+- Appui sur **Switch 1** → démarrage de la patrouille
 
-• après chaque évitement, retour automatique à la boucle principale.
+### Scénario 2 – Mode urgence 🚨
+- Appui sur **Switch 2** → clignotement rapide des LEDs
+- Nouvel appui → retour à l’état normal
 
-Architecture du code 🧩
+### Scénario 3 – Obstacle côté gauche ⬅️
+- arrêt → recul → clignotant gauche (lent)
+- rotation à droite → marche avant
 
-Le projet est structuré en 5 modules assembleur ARM :
+### Scénario 4 – Obstacle côté droit ➡️
+- arrêt → recul → clignotant droit (lent)
+- rotation à gauche → marche avant
 
-MOTEUR.s ⚙️
+### Scénario 5 – Reprise normale 🔄
+- Après chaque évitement, retour automatique à la boucle principale
 
+---
+
+## Architecture du code
+
+Le projet est structuré en **modules assembleur ARM** distincts afin de garantir clarté et maintenabilité.
+
+### `MOTEUR.s`
 Gestion des moteurs :
-• avancer
-• reculer
-• tourner gauche/droite
-• stop
+- avancer
+- reculer
+- tourner à gauche / droite
+- arrêt
 
-LEDS.s 💡
+### `LEDS.s`
+Pilotage des LEDs (port F) :
+- allumage / extinction
+- clignotement lent directionnel
+- clignotement rapide (mode urgence)
 
-Pilotage des LEDs du port F :
-• allumer/éteindre
-• clignotement lent (directionnel)
-• clignotement rapide (urgence)
+### `SWITCH.s`
+Lecture des switches (port E) :
+- Switch 1 : démarrage
+- Switch 2 : activation du mode urgence
 
-SWITCH.s 🔘
+### `BUMPERS.s`
+Détection des obstacles :
+- bumper gauche
+- bumper droit
 
-Lecture des deux switches (port E) :
-• Switch 1 → démarrage
-• Switch 2 → urgence ON/OFF
-
-BUMPERS.s 🛑
-
-Détection obstacle via bumpers gauche/droit.
-
-MAIN.s 🧠
-
+### `MAIN.s`
 Coordination générale :
-• initialisations
-• boucle de patrouille
-• gestion des obstacles
-• gestion du mode urgence
-• reprise automatique de la marche avant
+- initialisation du matériel
+- boucle de patrouille
+- gestion des obstacles
+- gestion du mode urgence
+- reprise automatique du déplacement
 
-Structure du dépôt (exemple) 📁
+---
+
+## Structure du dépôt
+
+```text
 /EvalFBI
 │
 ├── src/
@@ -100,24 +112,4 @@ Structure du dépôt (exemple) 📁
 │   ├── Rapport-Projet.pdf
 │   └── Références techniques
 │
-└── README.md   ← ce fichier
-
-Compilation & Flash 🛠️
-Compilation (exemple avec arm-none-eabi)
-arm-none-eabi-as -mcpu=cortex-m3 -g -o MAIN.o MAIN.s
-arm-none-eabi-ld -T LM3S9B92.ld -o MAIN.elf MAIN.o
-arm-none-eabi-objcopy -O binary MAIN.elf MAIN.bin
-
-Flash du programme
-
-Selon votre configuration :
-• via bootloader USB
-• via JTAG
-• via l’IDE Keil µVision
-
-Références techniques 📚
-
-• Texas Instruments – LM3S9B92
-• ARM Architecture Reference Manual
-• Keil µVision 5
-• TI EVALBOT Documentation
+└── README.md
